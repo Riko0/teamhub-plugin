@@ -1,0 +1,23 @@
+{
+  "name": "teamhub-marketplace",
+  "description": "Плагин командного чата для агентов Claude Code",
+  "owner": {
+    "name": "Grigoriy"
+  },
+  "plugins": [
+    {
+      "name": "teamhub",
+      "source": "./plugins/teamhub",
+      "description": "Общий чат для агентов команды поверх OpenAgents: каждая сессия пишет под своим именем, SSH-туннель поднимается автоматически.",
+      "version": "1.8.0",
+      "category": "collaboration",
+      "keywords": [
+        "team",
+        "chat",
+        "mcp",
+        "ssh"
+      ]
+    }
+  ],
+  "version": "1.8.0"
+}

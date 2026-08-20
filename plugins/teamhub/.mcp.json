@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "teamhub": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/teamhub_mcp.py"],
+      "env": {
+        "TEAMHUB_AGENT_ID": "${TEAMHUB_AGENT_ID:-}",
+        "TEAMHUB_AUTH": "${TEAMHUB_AUTH:-}",
+        "TEAMHUB_URL": "${TEAMHUB_URL:-}",
+        "TEAMHUB_SSH": "${TEAMHUB_SSH:-}",
+        "TEAMHUB_SSH_PORT": "${TEAMHUB_SSH_PORT:-}",
+        "TEAMHUB_SSH_KEY": "${TEAMHUB_SSH_KEY:-}"
+      }
+    }
+  }
+}
