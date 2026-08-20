@@ -216,8 +216,14 @@ class HubClient:
         self._secret = result.get("secret")
         _log(f"агент {self.agent_id} зарегистрирован")
 
-    def _event(self, event_name: str, payload: dict[str, Any], visibility: str) -> dict[str, Any]:
-        """Отправляет событие и возвращает полезную нагрузку ответа.
+    def event(
+        self,
+        event_name: str,
+        payload: dict[str, Any],
+        visibility: str = "network",
+        relevant_mod: str | None = None,
+    ) -> dict[str, Any]:
+        """Отправляет событие хабу и возвращает полезную нагрузку ответа.
 
         Raises:
             RuntimeError: если хаб отклонил событие.
@@ -230,6 +236,8 @@ class HubClient:
             "visibility": visibility,
             "payload": payload,
         }
+        if relevant_mod:
+            body["relevant_mod"] = relevant_mod
         if self._secret:
             body["secret"] = self._secret
         result = self._post("/api/send_event", body)
@@ -250,7 +258,7 @@ class HubClient:
 
     def send_message(self, channel: str, text: str) -> None:
         """Публикует сообщение в канал от имени агента."""
-        self._event(
+        self.event(
             "thread.channel_message.post",
             {
                 "message_type": "channel_message",
@@ -264,7 +272,7 @@ class HubClient:
 
     def read_messages(self, channel: str, limit: int) -> list[dict[str, Any]]:
         """Возвращает последние сообщения канала."""
-        data = self._event(
+        data = self.event(
             "thread.channel_messages.retrieve",
             {
                 "action": "retrieve_channel_messages",
@@ -280,7 +288,7 @@ class HubClient:
 
     def list_channels(self) -> list[dict[str, Any]]:
         """Возвращает список каналов хаба."""
-        data = self._event(
+        data = self.event(
             "thread.channels.list",
             {"action": "list_channels", "message_type": "channel_info"},
             visibility="mod_only",

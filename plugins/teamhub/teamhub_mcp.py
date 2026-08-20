@@ -17,11 +17,12 @@ from typing import Any, Final, NamedTuple
 
 from channel_push import ChannelPusher, NotificationWriter, build_policy
 from hub_client import HubClient, load_config, notify_settings
+from tools import DEFAULT_LIMIT, all_tools
+from wiki_client import WikiClient, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.8.0"
-DEFAULT_LIMIT: Final[int] = 20
+SERVER_VERSION: Final[str] = "1.9.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -45,7 +46,21 @@ CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к команд�
 Отвечайте коротко и по делу — каждое сообщение стоит контекста обоим. Если
 сказать нечего или вопрос не к вам, молча продолжайте своё дело. Не отвечайте
 на собственные сообщения, не благодарите ради вежливости и не поддерживайте
-переписку ради переписки: два-три сообщения по существу лучше десяти."""
+переписку ради переписки: два-три сообщения по существу лучше десяти.
+
+Ведите общую вики — это память команды. Чат живёт минутами, вики месяцами.
+
+- Прежде чем спрашивать в чате, посмотрите в вики: hub_wiki_search, затем
+  hub_wiki_read. Ответ может быть уже записан.
+- Узнали что-то, что пригодится другим или вам же через месяц, — запишите
+  через hub_wiki_write. Туда идут устройство систем, принятые решения и
+  почему именно так, договорённости, разобранные грабли, рабочие рецепты.
+  Не идут: сиюминутная переписка, пересказ чата, черновые мысли.
+- Разобрались в чате до чего-то стоящего — не оставляйте это в чате,
+  перенесите в вики и дайте ссылку на страницу.
+- Страницу коллеги правьте, если знаете точно; сомневаетесь — спросите
+  в канале. Полностью переписывать чужую страницу без нужды не стоит.
+- Пути осмысленные, вида «проект/тема»; пишите по-русски, разметкой markdown."""
 
 
 def _log(message: str) -> None:
@@ -84,49 +99,6 @@ def _format_messages(messages: list[dict[str, Any]], channel: str) -> str:
     return f"канал {channel}:\n" + "\n".join(lines)
 
 
-def _tool_definitions(agent_id: str) -> list[dict[str, Any]]:
-    """Описывает инструменты, которые сервер отдаёт Claude Code."""
-    return [
-        {
-            "name": "hub_send_message",
-            "description": f"Отправить сообщение в канал командного хаба от имени «{agent_id}».",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "channel": {"type": "string", "description": "Имя канала, например general"},
-                    "text": {"type": "string", "description": "Текст сообщения"},
-                },
-                "required": ["channel", "text"],
-            },
-        },
-        {
-            "name": "hub_read_messages",
-            "description": "Прочитать последние сообщения канала командного хаба.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "channel": {"type": "string", "description": "Имя канала"},
-                    "limit": {
-                        "type": "integer",
-                        "description": f"Сколько сообщений (по умолчанию {DEFAULT_LIMIT})",
-                    },
-                },
-                "required": ["channel"],
-            },
-        },
-        {
-            "name": "hub_list_channels",
-            "description": "Список каналов командного хаба.",
-            "inputSchema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "hub_whoami",
-            "description": "Под каким именем эта сессия подключена к хабу.",
-            "inputSchema": {"type": "object", "properties": {}},
-        },
-    ]
-
-
 def _call_tool(state: BridgeState, name: str, args: dict[str, Any]) -> str:
     """Выполняет инструмент и возвращает текст для модели.
 
@@ -149,7 +121,33 @@ def _call_tool(state: BridgeState, name: str, args: dict[str, Any]) -> str:
         if not channels:
             return "каналов нет"
         return "\n".join(f"{c.get('name')} — {c.get('description', '')}".rstrip(" —") for c in channels)
+    if name.startswith("hub_wiki_"):
+        return _call_wiki(WikiClient(hub), name, args)
     raise ValueError(f"неизвестный инструмент: {name}")
+
+
+def _call_wiki(wiki: WikiClient, name: str, args: dict[str, Any]) -> str:
+    """Выполняет инструмент вики.
+
+    Raises:
+        ValueError: если инструмент неизвестен.
+    """
+    if name == "hub_wiki_list":
+        return format_pages(wiki.list_pages())
+    if name == "hub_wiki_read":
+        path = args["page_path"]
+        return format_page(wiki.read_page(path), path)
+    if name == "hub_wiki_search":
+        return format_pages(wiki.search_pages(args["query"]))
+    if name == "hub_wiki_write":
+        return wiki.write_page(
+            page_path=args["page_path"],
+            content=args["content"],
+            title=args.get("title"),
+            category=args.get("category"),
+            tags=args.get("tags"),
+        )
+    raise ValueError(f"неизвестный инструмент вики: {name}")
 
 
 def _handle_tools_call(state: BridgeState, params: dict[str, Any]) -> dict[str, Any]:
@@ -178,7 +176,7 @@ def _handle(state: BridgeState, request: dict[str, Any]) -> dict[str, Any] | Non
             "instructions": CHANNEL_INSTRUCTIONS.format(agent_id=state.agent_id),
         }
     elif method == "tools/list":
-        result = {"tools": _tool_definitions(state.agent_id)}
+        result = {"tools": all_tools(state.agent_id)}
     elif method == "tools/call":
         result = _handle_tools_call(state, request.get("params") or {})
     else:
