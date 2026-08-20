@@ -72,17 +72,20 @@ class NotifyPolicy(NamedTuple):
     max_chars: int = DEFAULT_MAX_CHARS
 
     def wants(self, agent_id: str, channel: str, text: str) -> bool:
-        """Решает, доставлять ли сообщение в сессию."""
+        """Решает, доставлять ли сообщение в сессию.
+
+        Прямой зов и обращение ко всем проходят мимо ограничения по каналам:
+        иначе объявление для команды не дошло бы до тех, кто сузил список
+        своим проектом.
+        """
         if self.mode == NOTIFY_OFF:
             return False
         lowered = text.lower()
-        if f"@{agent_id.lower()}" in lowered:
-            return True  # позвали по имени — откликаемся в любом канале
+        if f"@{agent_id.lower()}" in lowered or any(tag in lowered for tag in BROADCAST_TAGS):
+            return True
         if self.channels and channel not in self.channels:
             return False
-        if self.mode == NOTIFY_ALL:
-            return True
-        return any(tag in lowered for tag in BROADCAST_TAGS)
+        return self.mode == NOTIFY_ALL
 
 
 def _positive_int(value: str | None, fallback: int) -> int:
