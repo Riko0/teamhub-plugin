@@ -1,7 +1,10 @@
-"""Клиент командного хаба поверх HTTP-протокола OpenAgents.
+"""Клиент командного хаба: регистрация агента и обмен событиями.
 
 Хаб берёт имя отправителя прямо из тела запроса, поэтому каждый участник
 команды пишет под своим именем без каких-либо доработок на сервере.
+
+Как доставляются запросы, клиент не знает — этим занимается transport.
+Благодаря этому логику ниже можно проверять без живого сервера.
 
 Настройки берутся из переменных окружения, а чего нет там — из файла
 `~/.config/teamhub/config.json`, который создаёт teamhub_setup.py:
@@ -13,38 +16,34 @@
     TEAMHUB_SSH          user@host — плагин сам поднимет SSH-туннель до хаба
     TEAMHUB_SSH_PORT     порт хаба на сервере (по умолчанию 8700)
     TEAMHUB_SSH_KEY      путь к приватному ключу (необязательно)
-
-Если TEAMHUB_SSH не задан, работаем по HTTP на указанный адрес. Имя агента без
-явной настройки берётся из каталога проекта — см. resolve_agent_id.
 """
 
 from __future__ import annotations
 
 import base64
-import json
 import os
 import sys
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Final, NamedTuple
 
 from config_store import config_path, load_for_agent, load_stored
 from ssh_tunnel import SshTunnel
+from transport import HttpTransport, HubRejected, HubUnreachable, Transport
 
-REQUEST_TIMEOUT_S: Final[float] = 20.0
-
-
-class HubUnreachable(RuntimeError):
-    """Связи с хабом нет: сеть, таймаут, недоступный порт."""
-
-
-class HubRejected(RuntimeError):
-    """Хаб ответил, но отказал — например, запрошенной страницы не существует."""
-
+__all__ = [
+    "DEFAULT_REMOTE_PORT",
+    "HubClient",
+    "HubConfig",
+    "HubRejected",
+    "HubUnreachable",
+    "build_auth_header",
+    "load_config",
+    "notify_settings",
+    "resolve_agent_id",
+]
 
 DEFAULT_REMOTE_PORT: Final[int] = 8700
 # по этим словам в отказе понимаем, что хаб забыл нашу регистрацию
@@ -118,6 +117,7 @@ def load_config() -> HubConfig:
 
     Raises:
         RuntimeError: если не задан ни адрес хаба, ни SSH-назначение.
+        ValueError: если порт в настройках не число.
     """
     agent_id = resolve_agent_id(load_stored())
     stored = load_for_agent(agent_id)
@@ -135,42 +135,40 @@ def load_config() -> HubConfig:
     )
 
 
-class HubClient:
-    """Общение с хабом по HTTP от имени одного агента."""
+def build_transport(config: HubConfig) -> HttpTransport:
+    """Собирает транспорт под заданную конфигурацию."""
+    tunnel = None
+    if config.ssh_destination:
+        tunnel = SshTunnel(config.ssh_destination, config.ssh_port, config.ssh_key)
+    return HttpTransport(config.url, config.auth_header, tunnel)
 
-    def __init__(self, config: HubConfig) -> None:
+
+class HubClient:
+    """Общение с хабом от имени одного агента."""
+
+    def __init__(self, config: HubConfig, transport: Transport | None = None) -> None:
         self._config = config
+        self._transport = transport if transport is not None else build_transport(config)
         self._secret: str | None = None
         self._connected = False
         self._closed = False
         self._connect_lock = threading.Lock()
-        self._tunnel: SshTunnel | None = None
-        if config.ssh_destination:
-            self._tunnel = SshTunnel(config.ssh_destination, config.ssh_port, config.ssh_key)
 
     @property
     def agent_id(self) -> str:
         """Имя, под которым агент пишет в каналы."""
         return self._config.agent_id
 
-    @property
-    def _base_url(self) -> str:
-        """Текущий адрес хаба: через туннель или прямой."""
-        if self._tunnel is not None:
-            return f"http://127.0.0.1:{self._tunnel.local_port}"
-        return str(self._config.url)
-
     def connect(self) -> None:
-        """Поднимает туннель при необходимости и регистрирует агента."""
-        if self._tunnel is not None:
-            self._tunnel.start()
+        """Открывает транспорт и регистрирует агента."""
+        opener = getattr(self._transport, "open", None)
+        if callable(opener):
+            opener()
         self._register()
         self._connected = True
 
     def ensure_connected(self) -> None:
         """Подключается, если это ещё не удалось или регистрация потерялась.
-
-        Вызывается и из фонового опроса, поэтому под блокировкой.
 
         Raises:
             HubRejected: если клиент уже закрыт и переподключаться нельзя.
@@ -181,69 +179,38 @@ class HubClient:
             if not self._connected:
                 self.connect()
 
+    def close(self) -> None:
+        """Закрывает клиента навсегда: переподключений больше не будет."""
+        self._closed = True
+        self._connected = False
+        self._transport.close()
+
     def _invalidate(self) -> None:
         """Помечает регистрацию потерянной — следующий вызов переподключится."""
         with self._connect_lock:
             self._connected = False
             self._secret = None
 
-    def _lost_registration(self, message: str) -> bool:
+    @staticmethod
+    def _lost_registration(message: str) -> bool:
         """Похож ли отказ хаба на забытую регистрацию."""
         lowered = message.lower()
         return any(marker in lowered for marker in LOST_REGISTRATION)
 
-    def close(self) -> None:
-        """Закрывает клиента навсегда: переподключений больше не будет."""
-        self._closed = True
-        if self._tunnel is not None:
-            self._tunnel.stop()
-        self._connected = False
-
-    def _request(self, request: urllib.request.Request) -> dict[str, Any]:
-        """Выполняет запрос и возвращает разобранный ответ.
-
-        Raises:
-            RuntimeError: если хаб недоступен или вернул ошибку транспорта.
-        """
-        if self._config.auth_header:
-            request.add_header("Authorization", self._config.auth_header)
-        try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_S) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            path = request.selector.split("?", 1)[0]  # в строке запроса лежит секрет
-            raise HubRejected(f"хаб ответил {exc.code} на {path}") from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise HubUnreachable(f"нет связи с хабом: {type(exc).__name__}") from exc
-
-    def _get(self, path: str) -> dict[str, Any]:
-        """Выполняет GET-запрос к хабу."""
-        if self._tunnel is not None:
-            self._tunnel.ensure_alive()
-        return self._request(urllib.request.Request(f"{self._base_url}{path}", method="GET"))
-
-    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Выполняет POST и возвращает разобранный ответ.
-
-        Raises:
-            RuntimeError: если хаб недоступен или вернул ошибку транспорта.
-        """
-        if self._tunnel is not None:
-            self._tunnel.ensure_alive()
-        data = json.dumps(body).encode("utf-8")
-        request = urllib.request.Request(f"{self._base_url}{path}", data=data, method="POST")
-        request.add_header("Content-Type", "application/json")
-        return self._request(request)
+    @staticmethod
+    def _reason(result: dict[str, Any], default: str) -> str:
+        """Достаёт причину отказа: хаб кладёт её то в одно поле, то в другое."""
+        return str(result.get("error_message") or result.get("message") or default)
 
     def _register(self) -> None:
         """Регистрирует агента в сети, запоминая выданный секрет.
 
         Raises:
-            RuntimeError: если хаб отклонил регистрацию.
+            HubRejected: если хаб отклонил регистрацию.
         """
-        result = self._post("/api/register", {"agent_id": self.agent_id, "metadata": {}})
+        result = self._transport.post("/api/register", {"agent_id": self.agent_id, "metadata": {}})
         if not result.get("success"):
-            raise HubRejected(f"регистрация отклонена: {result.get('error_message')}")
+            raise HubRejected(f"регистрация отклонена: {self._reason(result, 'без объяснения')}")
         self._secret = result.get("secret")
         _log(f"агент {self.agent_id} зарегистрирован")
 
@@ -258,7 +225,7 @@ class HubClient:
         """Отправляет событие хабу и возвращает полезную нагрузку ответа.
 
         Raises:
-            RuntimeError: если хаб отклонил событие.
+            HubRejected: если хаб отклонил событие.
         """
         self.ensure_connected()
         body: dict[str, Any] = {
@@ -272,11 +239,10 @@ class HubClient:
             body["relevant_mod"] = relevant_mod
         if self._secret:
             body["secret"] = self._secret
-        result = self._post("/api/send_event", body)
+        result = self._transport.post("/api/send_event", body)
         if result.get("success"):
             return result.get("data") or {}
-        # причина бывает и в error_message, и в message — берём что есть
-        message = str(result.get("error_message") or result.get("message") or "хаб отклонил событие")
+        message = self._reason(result, "хаб отклонил событие")
         if not retry or not self._lost_registration(message):
             raise HubRejected(message)
         _log("хаб забыл регистрацию, подключаюсь заново")
@@ -286,14 +252,15 @@ class HubClient:
     def poll_events(self) -> list[dict[str, Any]]:
         """Забирает накопленные для агента события хаба.
 
-        Хаб складывает сюда уведомления о чужих сообщениях — это позволяет
-        узнавать о них, не дожидаясь, пока агента попросят посмотреть канал.
+        Raises:
+            HubRejected: если хаб отказал — иначе потеря регистрации осталась
+                бы незамеченной и сессия оглохла бы навсегда.
         """
         self.ensure_connected()
         query = urllib.parse.urlencode({"agent_id": self.agent_id, "secret": self._secret or ""})
-        result = self._get(f"/api/poll?{query}")
+        result = self._transport.get(f"/api/poll?{query}")
         if not result.get("success", True):
-            message = str(result.get("error_message") or result.get("message") or "опрос отклонён")
+            message = self._reason(result, "опрос отклонён")
             if self._lost_registration(message):
                 _log("хаб забыл регистрацию, переподключусь на следующем круге")
                 self._invalidate()
@@ -311,7 +278,6 @@ class HubClient:
                 "source_id": self.agent_id,
                 "relevant_agent_id": self.agent_id,
             },
-            visibility="network",
         )
 
     def read_messages(self, channel: str, limit: int) -> list[dict[str, Any]]:

@@ -1,7 +1,7 @@
 {
   "name": "teamhub",
   "description": "Общий чат для агентов команды: каждая сессия Claude Code пишет в общие каналы под своим именем. При необходимости сам поднимает SSH-туннель до хаба. Инструменты hub_send_message, hub_read_messages, hub_list_channels, hub_whoami.",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "keywords": [
     "team",
     "chat",
