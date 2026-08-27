@@ -100,6 +100,40 @@ def wiki_tools() -> list[dict[str, Any]]:
             ),
         },
         {
+            "name": "hub_wiki_edit",
+            "description": (
+                "Заменить кусок текста на странице вики, не пересылая её целиком. "
+                "Кусок должен встречаться ровно один раз — добавьте окружение, если он повторяется."
+            ),
+            "inputSchema": _obj(
+                {
+                    "page_path": {"type": "string", "description": "Путь страницы"},
+                    "old_text": {"type": "string", "description": "Что заменить, дословно"},
+                    "new_text": {"type": "string", "description": "На что заменить"},
+                },
+                ["page_path", "old_text", "new_text"],
+            ),
+        },
+        {
+            "name": "hub_wiki_delete",
+            "description": "Удалить страницу вики вместе с историей. Действие необратимое.",
+            "inputSchema": _obj(
+                {"page_path": {"type": "string", "description": "Путь страницы"}},
+                ["page_path"],
+            ),
+        },
+        {
+            "name": "hub_wiki_rename",
+            "description": "Перенести страницу вики на другой путь вместе с содержимым.",
+            "inputSchema": _obj(
+                {
+                    "page_path": {"type": "string", "description": "Текущий путь"},
+                    "new_path": {"type": "string", "description": "Новый путь-ветка через слэши"},
+                },
+                ["page_path", "new_path"],
+            ),
+        },
+        {
             "name": "hub_wiki_append",
             "description": (
                 "Дописать раздел в конец страницы вики, не пересылая её целиком. "

@@ -160,3 +160,66 @@ class TestДописывание:
         wiki = _wiki(config, ОтказавшийТранспорт(HubUnreachable("сеть")))
         with pytest.raises(HubUnreachable):
             wiki.append_to_page("тема", "текст")
+
+
+class TestПравкаКуска:
+    """Замена фрагмента вместо пересылки всей страницы."""
+
+    @staticmethod
+    def _со_страницей(config: HubConfig, текст: str) -> tuple[WikiClient, FakeTransport]:
+        transport = FakeTransport(
+            [
+                {"success": True, "secret": "s"},
+                {"success": True, "data": {"wiki_content": текст}},
+                {"success": True, "data": {}},
+            ]
+        )
+        return _wiki(config, transport), transport
+
+    def test_единственное_вхождение_заменяется(self, config: HubConfig) -> None:
+        wiki, transport = self._со_страницей(config, "# Тема\n\nстарое значение\n\nхвост")
+        assert "поправлена" in wiki.edit_fragment("тема", "старое значение", "новое значение")
+        правка = [c for c in transport.calls if c[1] == "/api/send_event"][-1][2]
+        assert "новое значение" in правка["payload"]["wiki_content"]
+        assert "хвост" in правка["payload"]["wiki_content"], "остальное не должно потеряться"
+
+    def test_неоднозначный_кусок_отвергается(self, config: HubConfig) -> None:
+        wiki, transport = self._со_страницей(config, "повтор и ещё раз повтор")
+        with pytest.raises(HubRejected, match="встречается 2"):
+            wiki.edit_fragment("тема", "повтор", "замена")
+        отправки = [c for c in transport.calls if c[1] == "/api/send_event"]
+        assert len(отправки) == 1, "при отказе править страницу нельзя"
+
+    def test_отсутствующий_кусок_отвергается(self, config: HubConfig) -> None:
+        wiki, _ = self._со_страницей(config, "какой-то текст")
+        with pytest.raises(HubRejected, match="нет такого куска"):
+            wiki.edit_fragment("тема", "чего тут нет", "замена")
+
+
+class TestПереносИУдаление:
+    def test_перенос_пишет_новую_и_убирает_старую(self, config: HubConfig) -> None:
+        transport = FakeTransport(
+            [
+                {"success": True, "secret": "s"},
+                {"success": False, "message": "Page not found: новый"},  # целевой свободен
+                {"success": True, "data": {"wiki_content": "тело"}},  # исходная
+                {"success": False, "message": "Page not found: новый"},  # write: проверка
+                {"success": True, "data": {}},  # create
+                {"success": True, "data": {}},  # delete
+            ]
+        )
+        wiki = _wiki(config, transport)
+        assert "перенесена" in wiki.rename_page("старый", "новый")
+        события = [c[2]["event_name"] for c in transport.calls if c[1] == "/api/send_event"]
+        assert события[-1] == "wiki.page.delete"
+        assert "wiki.page.create" in события
+
+    def test_занятый_путь_не_затирается(self, config: HubConfig) -> None:
+        transport = FakeTransport(
+            [
+                {"success": True, "secret": "s"},
+                {"success": True, "data": {"wiki_content": "уже есть"}},
+            ]
+        )
+        with pytest.raises(HubRejected, match="уже существует"):
+            _wiki(config, transport).rename_page("старый", "занятый")

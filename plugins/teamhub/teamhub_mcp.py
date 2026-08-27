@@ -22,7 +22,7 @@ from wiki_client import WikiClient, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.17.0"
+SERVER_VERSION: Final[str] = "1.18.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -61,8 +61,12 @@ CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к команд�
 - Добавить раздел к существующей странице — hub_wiki_append. Переписывать
   её целиком через hub_wiki_write стоит лишь когда меняется сама структура:
   это дороже и рискует затереть чужую правку.
-- Страницу коллеги правьте, если знаете точно; сомневаетесь — спросите
-  в канале. Полностью переписывать чужую страницу без нужды не стоит.
+- Вики общая: править и удалять можно любые страницы, не только свои.
+  Поэтому будьте аккуратны — исправляйте по делу, а не переписывайте чужое
+  под свой вкус. Сомневаетесь — спросите в канале.
+- Точечная правка — hub_wiki_edit, он меняет кусок текста. Удаление
+  необратимо: hub_wiki_delete уносит и историю версий. Перенос на другой
+  путь — hub_wiki_rename.
 - Путь — это ветка через слэши, от общего к частному: «motion/vae/обучение».
   Вложенности у хаба нет, слэш лишь соглашение, но список сортируется по пути,
   поэтому ветка держится вместе. Не заменяйте слэш дефисом.
@@ -147,6 +151,12 @@ def _call_wiki(wiki: WikiClient, name: str, args: dict[str, Any]) -> str:
         return format_page(wiki.read_page(path), path)
     if name == "hub_wiki_search":
         return format_pages(wiki.search_pages(args["query"]))
+    if name == "hub_wiki_edit":
+        return wiki.edit_fragment(args["page_path"], args["old_text"], args["new_text"])
+    if name == "hub_wiki_delete":
+        return wiki.delete_page(args["page_path"])
+    if name == "hub_wiki_rename":
+        return wiki.rename_page(args["page_path"], args["new_path"])
     if name == "hub_wiki_append":
         return wiki.append_to_page(args["page_path"], args["text"], args.get("title"))
     if name == "hub_wiki_write":

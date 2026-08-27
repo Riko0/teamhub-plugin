@@ -110,6 +110,59 @@ class WikiClient:
         self._event("wiki.page.edit", {"page_path": page_path, "wiki_content": joined})
         return f"страница {page_path} дополнена"
 
+    def delete_page(self, page_path: str) -> str:
+        """Удаляет страницу вместе с историей версий.
+
+        Returns:
+            Короткое описание того, что произошло.
+        """
+        self._event("wiki.page.delete", {"page_path": page_path})
+        return f"страница {page_path} удалена"
+
+    def rename_page(self, page_path: str, new_path: str) -> str:
+        """Переносит страницу на новый путь.
+
+        Переименования в хабе нет, поэтому переносим сами: пишем по новому
+        пути и убираем старую. Порядок важен — если запись не удалась,
+        прежняя страница остаётся на месте.
+
+        Raises:
+            HubRejected: если целевой путь занят или исходной страницы нет.
+        """
+        if self.read_page(new_path).get("wiki_content") is not None:
+            raise HubRejected(f"страница {new_path} уже существует")
+        page = self.read_page(page_path)
+        content = page.get("wiki_content")
+        if content is None:
+            raise HubRejected(f"страницы {page_path} нет")
+        self.write_page(new_path, content, title=new_path.rsplit("/", 1)[-1])
+        self.delete_page(page_path)
+        return f"страница перенесена: {page_path} → {new_path}"
+
+    def edit_fragment(self, page_path: str, old_text: str, new_text: str) -> str:
+        """Заменяет кусок текста страницы, не пересылая её целиком.
+
+        Кусок должен встречаться ровно один раз: иначе непонятно, какой из них
+        имелся в виду, и молча испортить чужой текст хуже, чем отказать.
+
+        Raises:
+            HubRejected: если страницы нет или кусок не найден либо неоднозначен.
+        """
+        page = self.read_page(page_path)
+        body = page.get("wiki_content")
+        if body is None:
+            raise HubRejected(f"страницы {page_path} нет")
+        found = body.count(old_text)
+        if found == 0:
+            raise HubRejected(f"в странице {page_path} нет такого куска текста")
+        if found > 1:
+            raise HubRejected(f"кусок встречается {found} раза — уточните, добавив окружение")
+        self._event(
+            "wiki.page.edit",
+            {"page_path": page_path, "wiki_content": body.replace(old_text, new_text, 1)},
+        )
+        return f"страница {page_path} поправлена"
+
 
 def format_pages(pages: list[dict[str, Any]], prefix: str | None = None) -> str:
     """Собирает список страниц в текст для модели."""
