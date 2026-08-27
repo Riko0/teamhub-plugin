@@ -24,6 +24,7 @@ import base64
 import os
 import sys
 import threading
+import time
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -37,6 +38,7 @@ __all__ = [
     "DEFAULT_REMOTE_PORT",
     "HubClient",
     "HubConfig",
+    "HubNameTaken",
     "HubRejected",
     "HubUnreachable",
     "build_auth_header",
@@ -45,7 +47,23 @@ __all__ = [
     "resolve_agent_id",
 ]
 
+
+class HubNameTaken(HubRejected):
+    """Имя уже занято другой сессией того же проекта.
+
+    Так бывает штатно: фоновые задачи Claude Code поднимают отдельный процесс
+    в том же каталоге, а имя агента выводится из каталога. Вторичный экземпляр
+    должен молча отойти в сторону, а не отбирать имя у основной сессии.
+    """
+
+
 DEFAULT_REMOTE_PORT: Final[int] = 8700
+NAME_TAKEN: Final[str] = "already registered"
+# Хаб пускает второго агента под тем же именем и молча обесценивает секрет
+# первого. Тогда оба начинают перерегистрироваться по кругу, отбирая имя
+# друг у друга. Заметив это, проигравший уходит молча.
+RECONNECT_LIMIT: Final[int] = 3
+RECONNECT_WINDOW_S: Final[float] = 180.0
 # по этим словам в отказе понимаем, что хаб забыл нашу регистрацию.
 # «authentication failed» сюда входит не для красоты: именно так отвечает
 # хаб после перезапуска, когда наш секрет уже недействителен
@@ -160,6 +178,8 @@ class HubClient:
         self._secret: str | None = None
         self._connected = False
         self._closed = False
+        self._name_taken = False
+        self._reconnects: list[float] = []
         self._connect_lock = threading.Lock()
 
     @property
@@ -183,6 +203,8 @@ class HubClient:
         """
         if self._closed:
             raise HubRejected("клиент закрыт")
+        if self._name_taken:
+            raise HubNameTaken(f"имя {self.agent_id} занято основной сессией этого проекта")
         with self._connect_lock:
             if not self._connected:
                 self.connect()
@@ -192,6 +214,19 @@ class HubClient:
         self._closed = True
         self._connected = False
         self._transport.close()
+
+    def _note_reconnect(self) -> None:
+        """Считает частые перерегистрации — признак драки за имя.
+
+        Raises:
+            HubNameTaken: если имя явно удерживает кто-то ещё.
+        """
+        now = time.monotonic()
+        self._reconnects = [t for t in self._reconnects if now - t < RECONNECT_WINDOW_S]
+        self._reconnects.append(now)
+        if len(self._reconnects) > RECONNECT_LIMIT:
+            self._name_taken = True
+            raise HubNameTaken(f"имя {self.agent_id} удерживает другая сессия этого проекта — уступаю")
 
     def _invalidate(self) -> None:
         """Помечает регистрацию потерянной — следующий вызов переподключится."""
@@ -218,8 +253,13 @@ class HubClient:
         """
         result = self._transport.post("/api/register", {"agent_id": self.agent_id, "metadata": {}})
         if not result.get("success"):
-            raise HubRejected(f"регистрация отклонена: {self._reason(result, 'без объяснения')}")
+            reason = self._reason(result, "без объяснения")
+            if NAME_TAKEN in reason.lower():
+                self._name_taken = True
+                raise HubNameTaken(f"имя {self.agent_id} занято основной сессией этого проекта")
+            raise HubRejected(f"регистрация отклонена: {reason}")
         self._secret = result.get("secret")
+        self._note_reconnect()
         _log(f"агент {self.agent_id} зарегистрирован")
 
     def event(

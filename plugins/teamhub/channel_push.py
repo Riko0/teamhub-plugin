@@ -171,11 +171,13 @@ class ChannelPusher:
         poll: Callable[[], list[dict[str, Any]]],
         writer: NotificationWriter,
         policy: NotifyPolicy | None = None,
+        fatal: tuple[type[Exception], ...] = (),
     ) -> None:
         self._agent_id = agent_id
         self._poll = poll
         self._writer = writer
         self._policy = policy or NotifyPolicy()
+        self._fatal = fatal  # ошибки, после которых опрашивать бессмысленно
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._wakes: list[float] = []
@@ -246,6 +248,9 @@ class ChannelPusher:
             try:
                 events = self._poll()
                 delay = POLL_INTERVAL_S
+            except self._fatal as exc:  # повторять нечего, тихо уходим
+                _log(f"доставка выключена: {exc}")
+                return
             except Exception as exc:  # поток фоновый: упасть молча нельзя
                 _log(f"опрос не удался, пробую реже: {type(exc).__name__}: {exc}")
                 delay = POLL_BACKOFF_S

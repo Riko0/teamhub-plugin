@@ -16,13 +16,13 @@ import sys
 from typing import Any, Final, NamedTuple
 
 from channel_push import ChannelPusher, NotificationWriter, build_policy
-from hub_client import HubClient, load_config, notify_settings
+from hub_client import HubClient, HubNameTaken, load_config, notify_settings
 from tools import DEFAULT_LIMIT, all_tools
 from wiki_client import WikiClient, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.14.0"
+SERVER_VERSION: Final[str] = "1.15.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -155,6 +155,10 @@ def _handle_tools_call(state: BridgeState, params: dict[str, Any]) -> dict[str, 
     name = params.get("name", "")
     try:
         text = _call_tool(state, name, params.get("arguments") or {})
+    except HubNameTaken as exc:
+        # штатная ситуация: фоновая задача Claude Code подняла второй экземпляр
+        # в том же каталоге. Чат остаётся за основной сессией проекта
+        return {"content": [{"type": "text", "text": f"чат недоступен: {exc}"}], "isError": True}
     except TOOL_ERRORS as exc:
         _log(f"инструмент {name} завершился ошибкой: {exc}")
         return {"content": [{"type": "text", "text": f"ошибка: {exc}"}], "isError": True}
@@ -236,7 +240,7 @@ def main() -> None:
     pusher = None
     if state.hub is not None:
         policy = build_policy(*notify_settings(state.agent_id))
-        pusher = ChannelPusher(state.agent_id, state.hub.poll_events, writer, policy)
+        pusher = ChannelPusher(state.agent_id, state.hub.poll_events, writer, policy, fatal=(HubNameTaken,))
     try:
         _serve(state, writer, pusher)
     finally:

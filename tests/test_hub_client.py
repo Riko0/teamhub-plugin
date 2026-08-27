@@ -150,3 +150,59 @@ def test_любой_отказ_опроса_ведёт_к_переподключ
         client.poll_events()
     assert client.poll_events() == [], "следующий круг должен переподключиться"
     assert len([c for c in transport.calls if c[1] == "/api/register"]) == 2
+
+
+class TestЗанятоеИмя:
+    """Фоновые задачи Claude Code поднимают второй экземпляр в том же каталоге."""
+
+    @staticmethod
+    def _занято(config: HubConfig) -> HubClient:
+        transport = FakeTransport(
+            [{"success": False, "message": "Agent goalekseenko-motion already registered with network"}]
+        )
+        return HubClient(config, transport)
+
+    def test_вторичный_экземпляр_не_оспаривает_имя(self, config: HubConfig) -> None:
+        from hub_client import HubNameTaken
+
+        client = self._занято(config)
+        with pytest.raises(HubNameTaken, match="занято"):
+            client.send_message("general", "привет")
+
+    def test_повторных_попыток_не_делает(self, config: HubConfig) -> None:
+        from hub_client import HubNameTaken
+
+        transport = FakeTransport([{"success": False, "message": "Agent x already registered with network"}])
+        client = HubClient(config, transport)
+        for _ in range(3):
+            with pytest.raises(HubNameTaken):
+                client.list_channels()
+        обращений = [c for c in transport.calls if c[1] == "/api/register"]
+        assert len(обращений) == 1, "после отказа не должно быть новых попыток"
+
+    def test_занятое_имя_не_путается_с_потерей_регистрации(self, config: HubConfig) -> None:
+        """«already registered» содержит слово register — легко перепутать."""
+        from hub_client import HubNameTaken
+
+        client = self._занято(config)
+        with pytest.raises(HubNameTaken):
+            client.poll_events()
+
+
+def test_частые_перерегистрации_считаются_дракой_за_имя(config: HubConfig) -> None:
+    """Хаб пускает одноимённого и обесценивает чужой секрет — так возникают качели."""
+    from hub_client import HubNameTaken
+
+    ответы = []
+    for _ in range(6):
+        ответы.append({"success": True, "secret": "s"})
+        ответы.append({"success": False, "error_message": "Authentication failed: Invalid or missing secret"})
+    client = HubClient(config, FakeTransport(ответы))
+    with pytest.raises(HubNameTaken, match="уступаю"):
+        for _ in range(6):
+            try:
+                client.poll_events()
+            except HubNameTaken:
+                raise
+            except HubRejected:
+                continue  # обычный отказ — следующий круг переподключится
