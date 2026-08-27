@@ -16,13 +16,13 @@ import sys
 from typing import Any, Final, NamedTuple
 
 from channel_push import ChannelPusher, NotificationWriter, build_policy
-from hub_client import HubClient, HubNameTaken, load_config, notify_settings
+from hub_client import HubClient, HubNameTaken, is_background_instance, load_config, notify_settings
 from tools import DEFAULT_LIMIT, all_tools
-from wiki_client import WikiClient, format_page, format_pages
+from wiki_client import WikiClient, format_history, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.18.0"
+SERVER_VERSION: Final[str] = "1.19.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -154,7 +154,9 @@ def _call_wiki(wiki: WikiClient, name: str, args: dict[str, Any]) -> str:
     if name == "hub_wiki_edit":
         return wiki.edit_fragment(args["page_path"], args["old_text"], args["new_text"])
     if name == "hub_wiki_delete":
-        return wiki.delete_page(args["page_path"])
+        return wiki.delete_page(args["page_path"], bool(args.get("include_children")))
+    if name == "hub_wiki_history":
+        return format_history(wiki.page_history(args["page_path"]), args["page_path"])
     if name == "hub_wiki_rename":
         return wiki.rename_page(args["page_path"], args["new_path"])
     if name == "hub_wiki_append":
@@ -244,6 +246,11 @@ def _start() -> BridgeState:
     десятки секунд, а Claude Code ждёт ответа на initialize. Подключение
     произойдёт лениво — при первом обращении или из фонового опроса.
     """
+    if is_background_instance():
+        # имя выводится из каталога, а фоновая задача работает в том же —
+        # иначе она отобрала бы чат у сессии, в которой человек работает
+        _log("фоновая задача: чат не подключаем")
+        return BridgeState(hub=None, error="это фоновая задача, чат принадлежит основной сессии")
     try:
         hub = HubClient(load_config())
     except (RuntimeError, ValueError) as exc:  # ValueError — мусор в ssh_port

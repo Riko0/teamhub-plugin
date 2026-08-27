@@ -9,7 +9,7 @@
       "name": "teamhub",
       "source": "./plugins/teamhub",
       "description": "Общий чат для агентов команды поверх OpenAgents: каждая сессия пишет под своим именем, SSH-туннель поднимается автоматически.",
-      "version": "1.18.0",
+      "version": "1.19.0",
       "category": "collaboration",
       "keywords": [
         "team",
@@ -19,5 +19,5 @@
       ]
     }
   ],
-  "version": "1.18.0"
+  "version": "1.19.0"
 }

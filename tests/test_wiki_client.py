@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import FakeTransport
+from conftest import FakeHub, FakeTransport
 from hub_client import HubClient, HubConfig, HubRejected
 from transport import HubUnreachable
 from wiki_client import WikiClient, format_page, format_pages
@@ -196,30 +196,84 @@ class TestПравкаКуска:
             wiki.edit_fragment("тема", "чего тут нет", "замена")
 
 
-class TestПереносИУдаление:
-    def test_перенос_пишет_новую_и_убирает_старую(self, config: HubConfig) -> None:
-        transport = FakeTransport(
-            [
-                {"success": True, "secret": "s"},
-                {"success": False, "message": "Page not found: новый"},  # целевой свободен
-                {"success": True, "data": {"wiki_content": "тело"}},  # исходная
-                {"success": False, "message": "Page not found: новый"},  # write: проверка
-                {"success": True, "data": {}},  # create
-                {"success": True, "data": {}},  # delete
-            ]
+class TestВеткиЦеликом:
+    """Путь со слэшами и есть иерархия: операции должны уважать ветку."""
+
+    @staticmethod
+    def _wiki_with(config: HubConfig, pages: dict[str, str]) -> tuple[WikiClient, FakeHub]:
+        hub = FakeHub(pages)
+        return WikiClient(HubClient(config, hub)), hub
+
+    def test_перенос_тащит_вложенные_страницы(self, config: HubConfig) -> None:
+        wiki, hub = self._wiki_with(
+            config,
+            {"motion/vae": "корень", "motion/vae/обзор": "раз", "motion/vae/кодеки": "два"},
         )
-        wiki = _wiki(config, transport)
-        assert "перенесена" in wiki.rename_page("старый", "новый")
-        события = [c[2]["event_name"] for c in transport.calls if c[1] == "/api/send_event"]
-        assert события[-1] == "wiki.page.delete"
-        assert "wiki.page.create" in события
+        итог = wiki.rename_page("motion/vae", "motion/автокодировщик")
+        assert "3" in итог
+        assert set(hub.pages) == {
+            "motion/автокодировщик",
+            "motion/автокодировщик/обзор",
+            "motion/автокодировщик/кодеки",
+        }
+        assert hub.pages["motion/автокодировщик/обзор"]["wiki_content"] == "раз"
+
+    def test_ветка_без_собственной_страницы_переносится(self, config: HubConfig) -> None:
+        wiki, hub = self._wiki_with(config, {"motion/vae/обзор": "раз"})
+        wiki.rename_page("motion/vae", "motion/кодек")
+        assert set(hub.pages) == {"motion/кодек/обзор"}
 
     def test_занятый_путь_не_затирается(self, config: HubConfig) -> None:
-        transport = FakeTransport(
+        wiki, hub = self._wiki_with(config, {"старая": "а", "занятая": "б"})
+        with pytest.raises(HubRejected, match="уже существует"):
+            wiki.rename_page("старая", "занятая")
+        assert hub.pages["занятая"]["wiki_content"] == "б", "чужое содержимое цело"
+        assert "старая" in hub.pages, "исходная страница на месте"
+
+    def test_ветка_не_сносится_без_явной_просьбы(self, config: HubConfig) -> None:
+        wiki, hub = self._wiki_with(config, {"motion": "корень", "motion/vae": "внутри"})
+        with pytest.raises(HubRejected, match="ещё 1 страниц"):
+            wiki.delete_page("motion")
+        assert len(hub.pages) == 2, "ничего не должно пропасть"
+
+    def test_ветка_сносится_когда_попросили(self, config: HubConfig) -> None:
+        wiki, hub = self._wiki_with(config, {"motion": "корень", "motion/vae": "внутри", "imagesr": "чужое"})
+        итог = wiki.delete_page("motion", include_children=True)
+        assert "вместе с 1" in итог
+        assert set(hub.pages) == {"imagesr"}, "соседняя ветка не тронута"
+
+    def test_одиночная_страница_сносится_без_оговорок(self, config: HubConfig) -> None:
+        wiki, hub = self._wiki_with(config, {"тема": "текст"})
+        assert "удалена" in wiki.delete_page("тема")
+        assert hub.pages == {}
+
+
+class TestДерево:
+    """Отображение должно показывать структуру, а не плоский список."""
+
+    def test_вложенность_видна_отступами(self) -> None:
+        вывод = format_pages(
             [
-                {"success": True, "secret": "s"},
-                {"success": True, "data": {"wiki_content": "уже есть"}},
+                {"page_path": "motion/vae/обзор", "created_by": "a"},
+                {"page_path": "motion/заливка", "created_by": "b"},
+                {"page_path": "imagesr/обзор", "created_by": "c"},
             ]
         )
-        with pytest.raises(HubRejected, match="уже существует"):
-            _wiki(config, transport).rename_page("старый", "занятый")
+        строки = вывод.splitlines()
+        assert строки[0] == "imagesr/"
+        assert строки[1].startswith("  обзор")
+        assert "    обзор — a" in вывод, "третий уровень отбит вдвое"
+
+    def test_промежуточная_ветка_показана_даже_без_своей_страницы(self) -> None:
+        вывод = format_pages([{"page_path": "a/b/c", "created_by": "x"}])
+        assert вывод.splitlines()[1] == "  b/", "вложенная ветка должна быть отбита"
+
+    def test_вложенные_ветки_отбиваются_по_глубине(self) -> None:
+        """Отступ у самих веток, а не только у страниц: иначе дерево плоское."""
+        вывод = format_pages([{"page_path": "motion/vae/слои/первый", "created_by": "x"}])
+        assert вывод.splitlines() == [
+            "motion/",
+            "  vae/",
+            "    слои/",
+            "      первый — x",
+        ]

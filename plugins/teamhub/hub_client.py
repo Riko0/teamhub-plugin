@@ -64,6 +64,15 @@ NAME_TAKEN: Final[str] = "already registered"
 # друг у друга. Заметив это, проигравший уходит молча.
 RECONNECT_LIMIT: Final[int] = 3
 RECONNECT_WINDOW_S: Final[float] = 180.0
+# Claude Code поднимает под фоновые задачи отдельный процесс в том же каталоге.
+# Имя выводится из каталога, поэтому такой процесс отбирал бы его у сессии,
+# в которой человек работает. По этим следам в дереве процессов узнаём его.
+BACKGROUND_COMMANDS: Final[tuple[tuple[str, ...], ...]] = (
+    ("bg-pty-host",),
+    ("bg-spare",),
+    ("daemon", "run"),
+)
+CHAIN_DEPTH: Final[int] = 8
 # по этим словам в отказе понимаем, что хаб забыл нашу регистрацию.
 # «authentication failed» сюда входит не для красоты: именно так отвечает
 # хаб после перезапуска, когда наш секрет уже недействителен
@@ -110,6 +119,45 @@ def _setting(stored: dict[str, str], variable: str, key: str) -> str | None:
     if value.startswith("${"):
         value = ""
     return value or stored.get(key) or None
+
+
+def process_chain(depth: int = CHAIN_DEPTH) -> list[str]:
+    """Команды процессов вверх по дереву от текущего.
+
+    На системах без /proc (например, macOS) вернёт пустой список — тогда
+    считаем себя обычной сессией, потому что доказательств обратного нет.
+    """
+    chain: list[str] = []
+    try:
+        pid = os.getppid()
+        for _ in range(depth):
+            if pid <= 1:
+                break
+            status = Path(f"/proc/{pid}")
+            cmdline = (status / "cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+            chain.append(cmdline.strip())
+            stat_line = (status / "stat").read_text()
+            pid = int(stat_line.rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return chain
+
+
+def is_background_instance(chain: list[str] | None = None) -> bool:
+    """Запущены ли мы обслуживать фоновую задачу, а не живую сессию.
+
+    Смотрим на подкоманду сразу после имени программы, а не ищем слова
+    в любом месте строки: иначе любой процесс, чья команда просто упоминает
+    «daemon run», был бы принят за фоновую задачу. На этом я уже попался.
+    """
+    for command in chain if chain is not None else process_chain():
+        parts = command.split()
+        if len(parts) < 2 or not parts[0].rstrip("/").endswith("claude"):
+            continue
+        for expected in BACKGROUND_COMMANDS:
+            if tuple(parts[1 : 1 + len(expected)]) == expected:
+                return True
+    return False
 
 
 def resolve_agent_id(stored: dict[str, str]) -> str:
@@ -178,7 +226,7 @@ class HubClient:
         self._secret: str | None = None
         self._connected = False
         self._closed = False
-        self._name_taken = False
+        self._name_taken_until = 0.0
         self._reconnects: list[float] = []
         self._connect_lock = threading.Lock()
 
@@ -203,8 +251,8 @@ class HubClient:
         """
         if self._closed:
             raise HubRejected("клиент закрыт")
-        if self._name_taken:
-            raise HubNameTaken(f"имя {self.agent_id} занято основной сессией этого проекта")
+        if time.monotonic() < self._name_taken_until:
+            raise HubNameTaken(f"имя {self.agent_id} занято другой сессией этого проекта")
         with self._connect_lock:
             if not self._connected:
                 self.connect()
@@ -225,7 +273,9 @@ class HubClient:
         self._reconnects = [t for t in self._reconnects if now - t < RECONNECT_WINDOW_S]
         self._reconnects.append(now)
         if len(self._reconnects) > RECONNECT_LIMIT:
-            self._name_taken = True
+            # уступаем не навсегда: соперник мог просто закрыться
+            self._name_taken_until = now + RECONNECT_WINDOW_S
+            self._reconnects.clear()
             raise HubNameTaken(f"имя {self.agent_id} удерживает другая сессия этого проекта — уступаю")
 
     def _invalidate(self) -> None:
@@ -255,7 +305,7 @@ class HubClient:
         if not result.get("success"):
             reason = self._reason(result, "без объяснения")
             if NAME_TAKEN in reason.lower():
-                self._name_taken = True
+                self._name_taken_until = time.monotonic() + RECONNECT_WINDOW_S
                 raise HubNameTaken(f"имя {self.agent_id} занято основной сессией этого проекта")
             raise HubRejected(f"регистрация отклонена: {reason}")
         self._secret = result.get("secret")

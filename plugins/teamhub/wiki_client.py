@@ -110,34 +110,87 @@ class WikiClient:
         self._event("wiki.page.edit", {"page_path": page_path, "wiki_content": joined})
         return f"страница {page_path} дополнена"
 
-    def delete_page(self, page_path: str) -> str:
-        """Удаляет страницу вместе с историей версий.
+    def children_of(self, page_path: str) -> list[str]:
+        """Пути страниц, лежащих внутри ветки."""
+        branch = page_path.strip("/")
+        return [
+            str(page.get("page_path"))
+            for page in self.list_pages()
+            if str(page.get("page_path", "")).startswith(f"{branch}/")
+        ]
 
-        Returns:
-            Короткое описание того, что произошло.
-        """
-        self._event("wiki.page.delete", {"page_path": page_path})
-        return f"страница {page_path} удалена"
+    def delete_page(self, page_path: str, include_children: bool = False) -> str:
+        """Удаляет страницу, при желании вместе со всей веткой.
 
-    def rename_page(self, page_path: str, new_path: str) -> str:
-        """Переносит страницу на новый путь.
-
-        Переименования в хабе нет, поэтому переносим сами: пишем по новому
-        пути и убираем старую. Порядок важен — если запись не удалась,
-        прежняя страница остаётся на месте.
+        Ветка не удаляется молча: снести десяток страниц одним словом слишком
+        легко, поэтому нужно попросить об этом отдельно.
 
         Raises:
-            HubRejected: если целевой путь занят или исходной страницы нет.
+            HubRejected: если внутри есть страницы, а сносить их не просили.
         """
-        if self.read_page(new_path).get("wiki_content") is not None:
-            raise HubRejected(f"страница {new_path} уже существует")
-        page = self.read_page(page_path)
-        content = page.get("wiki_content")
+        kids = self.children_of(page_path)
+        if kids and not include_children:
+            listed = ", ".join(kids[:3]) + ("…" if len(kids) > 3 else "")
+            raise HubRejected(
+                f"внутри {page_path} ещё {len(kids)} страниц ({listed}). "
+                "Чтобы снести ветку целиком, попросите об этом явно"
+            )
+        for child in kids:
+            self._event("wiki.page.delete", {"page_path": child})
+        self._event("wiki.page.delete", {"page_path": page_path})
+        if kids:
+            return f"ветка {page_path} удалена вместе с {len(kids)} страницами внутри"
+        return f"страница {page_path} удалена"
+
+    def page_history(self, page_path: str) -> list[dict[str, Any]]:
+        """Возвращает историю правок страницы."""
+        data = self._event("wiki.page.history", {"page_path": page_path})
+        return list(data.get("versions") or data.get("history") or [])
+
+    def _move_one(self, page_path: str, new_path: str) -> None:
+        """Переносит одну страницу; вызывать после проверки занятости.
+
+        Raises:
+            HubRejected: если исходной страницы нет.
+        """
+        content = self.read_page(page_path).get("wiki_content")
         if content is None:
             raise HubRejected(f"страницы {page_path} нет")
         self.write_page(new_path, content, title=new_path.rsplit("/", 1)[-1])
-        self.delete_page(page_path)
-        return f"страница перенесена: {page_path} → {new_path}"
+        self._event("wiki.page.delete", {"page_path": page_path})
+
+    def rename_page(self, page_path: str, new_path: str) -> str:
+        """Переносит страницу или всю ветку на новый путь.
+
+        Переименования в хабе нет, поэтому переносим сами: пишем по новому
+        пути и убираем старую. Вложенные страницы едут следом — иначе ветка
+        распалась бы на части.
+
+        Raises:
+            HubRejected: если целевой путь занят или переносить нечего.
+        """
+        old, new = page_path.strip("/"), new_path.strip("/")
+        kids = self.children_of(old)
+        itself = self.read_page(old).get("wiki_content") is not None
+        if not kids and not itself:
+            raise HubRejected(f"страницы {old} нет")
+
+        targets = {old: new, **{kid: f"{new}/{kid[len(old) + 1 :]}" for kid in kids}}
+        for source, target in targets.items():
+            if source == old and not itself:
+                continue
+            if self.read_page(target).get("wiki_content") is not None:
+                raise HubRejected(f"страница {target} уже существует")
+
+        moved = 0
+        for source, target in targets.items():
+            if source == old and not itself:
+                continue
+            self._move_one(source, target)
+            moved += 1
+        if moved > 1:
+            return f"перенесено страниц: {moved} — ветка {old} теперь {new}"
+        return f"страница перенесена: {old} → {new}"
 
     def edit_fragment(self, page_path: str, old_text: str, new_text: str) -> str:
         """Заменяет кусок текста страницы, не пересылая её целиком.
@@ -164,17 +217,59 @@ class WikiClient:
         return f"страница {page_path} поправлена"
 
 
+def _author(page: dict[str, Any]) -> str:
+    """Кто завёл страницу."""
+    return str(page.get("created_by") or page.get("creator_id") or "?")
+
+
+def _tree(pages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Раскладывает плоские пути в дерево по слэшам."""
+    root: dict[str, Any] = {}
+    for page in pages:
+        node = root
+        parts = str(page.get("page_path", "")).split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {}).setdefault("дети", {})
+        node.setdefault(parts[-1], {})["страница"] = page
+    return root
+
+
+def _render(node: dict[str, Any], depth: int = 0) -> list[str]:
+    """Обходит дерево, отбивая уровни отступом."""
+    lines = []
+    for name in sorted(node):
+        item = node[name]
+        page = item.get("страница")
+        kids = item.get("дети") or {}
+        pad = "  " * depth
+        if page is not None:
+            lines.append(f"{pad}{name} — {_author(page)}")
+        else:
+            lines.append(f"{pad}{name}/")
+        if kids:
+            lines.extend(_render(kids, depth + 1))
+    return lines
+
+
 def format_pages(pages: list[dict[str, Any]], prefix: str | None = None) -> str:
-    """Собирает список страниц в текст для модели."""
+    """Показывает страницы деревом: путь со слэшами и есть иерархия."""
     if not pages:
         return f"в ветке {prefix} страниц нет" if prefix else "в вики пока нет страниц"
+    return "\n".join(_render(_tree(pages)))
+
+
+def format_history(versions: list[dict[str, Any]], page_path: str) -> str:
+    """Показывает историю правок страницы."""
+    if not versions:
+        return f"история страницы {page_path} пуста"
     lines = []
-    for page in pages:
-        path = page.get("page_path", "?")
-        title = page.get("title") or path
-        author = page.get("created_by") or page.get("creator_id") or "?"
-        lines.append(f"{path} — {title} (автор {author})")
-    return "\n".join(lines)
+    for item in sorted(versions, key=lambda x: x.get("version_number") or 0, reverse=True):
+        number = item.get("version_number", "?")
+        who = item.get("author_id") or item.get("created_by") or item.get("source_id") or "?"
+        when = str(item.get("created_timestamp") or item.get("timestamp") or "")[:19]
+        note = item.get("change_summary") or item.get("rationale") or ""
+        lines.append(f"версия {number} — {who} {when} {note}".rstrip())
+    return f"история {page_path}:\n" + "\n".join(lines)
 
 
 def format_page(page: dict[str, Any], page_path: str) -> str:

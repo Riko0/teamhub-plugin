@@ -47,6 +47,65 @@ class FakeTransport:
         self.closed = True
 
 
+class FakeHub:
+    """Поддельный хаб с настоящим поведением вики.
+
+    Очередь заранее заготовленных ответов оказалась хрупкой: стоило изменить
+    порядок вызовов внутри клиента, и тесты падали, хотя поведение оставалось
+    верным. Здесь вместо очереди простая модель хранилища.
+    """
+
+    def __init__(self, pages: dict[str, str] | None = None) -> None:
+        self.pages: dict[str, dict[str, Any]] = {
+            path: {"page_path": path, "wiki_content": body, "created_by": "кто-то"}
+            for path, body in (pages or {}).items()
+        }
+        self.events: list[str] = []
+        self.closed = False
+
+    def open(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+    def get(self, path: str) -> dict[str, Any]:
+        return {"success": True, "messages": []}
+
+    def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        if path == "/api/register":
+            return {"success": True, "secret": "s3cret"}
+        name = body.get("event_name", "")
+        payload = body.get("payload") or {}
+        self.events.append(name)
+        page_path = payload.get("page_path")
+        if name == "wiki.pages.list":
+            return {"success": True, "data": {"pages": list(self.pages.values())}}
+        if name == "wiki.page.get":
+            page = self.pages.get(page_path)
+            if page is None:
+                return {"success": False, "message": f"Page not found: {page_path}"}
+            return {"success": True, "data": dict(page)}
+        if name == "wiki.page.create":
+            self.pages[page_path] = {
+                "page_path": page_path,
+                "wiki_content": payload.get("wiki_content", ""),
+                "title": payload.get("title"),
+                "created_by": body.get("source_id"),
+            }
+            return {"success": True, "data": {}}
+        if name == "wiki.page.edit":
+            if page_path not in self.pages:
+                return {"success": False, "message": f"Page not found: {page_path}"}
+            self.pages[page_path]["wiki_content"] = payload.get("wiki_content", "")
+            return {"success": True, "data": {}}
+        if name == "wiki.page.delete":
+            if self.pages.pop(page_path, None) is None:
+                return {"success": False, "message": f"Page not found: {page_path}"}
+            return {"success": True, "data": {}}
+        return {"success": True, "data": {}}
+
+
 @pytest.fixture
 def config() -> HubConfig:
     """Конфигурация без туннеля — транспорт всё равно подменяется."""

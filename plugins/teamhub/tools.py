@@ -116,7 +116,25 @@ def wiki_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "hub_wiki_delete",
-            "description": "Удалить страницу вики вместе с историей. Действие необратимое.",
+            "description": (
+                "Удалить страницу вики вместе с историей. Действие необратимое. "
+                "Если внутри есть вложенные страницы, снести ветку целиком можно "
+                "только явно попросив об этом."
+            ),
+            "inputSchema": _obj(
+                {
+                    "page_path": {"type": "string", "description": "Путь страницы"},
+                    "include_children": {
+                        "type": "boolean",
+                        "description": "Снести и всё, что лежит внутри ветки",
+                    },
+                },
+                ["page_path"],
+            ),
+        },
+        {
+            "name": "hub_wiki_history",
+            "description": "Кто и когда правил страницу вики. Вики общая, полезно понимать, кто что менял.",
             "inputSchema": _obj(
                 {"page_path": {"type": "string", "description": "Путь страницы"}},
                 ["page_path"],
@@ -124,7 +142,10 @@ def wiki_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "hub_wiki_rename",
-            "description": "Перенести страницу вики на другой путь вместе с содержимым.",
+            "description": (
+                "Перенести страницу вики на другой путь. Вложенные страницы едут следом, "
+                "то есть ветка переносится целиком."
+            ),
             "inputSchema": _obj(
                 {
                     "page_path": {"type": "string", "description": "Текущий путь"},

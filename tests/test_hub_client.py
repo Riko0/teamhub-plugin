@@ -206,3 +206,73 @@ def test_частые_перерегистрации_считаются_драк
                 raise
             except HubRejected:
                 continue  # обычный отказ — следующий круг переподключится
+
+
+class TestФоновыеЗадачи:
+    """Claude Code поднимает под фоновые задачи процесс в том же каталоге.
+
+    Имя агента выводится из каталога, поэтому без распознавания фоновая
+    задача отбирала бы чат у сессии, в которой человек работает.
+    """
+
+    def test_фон_узнаётся_по_дереву_процессов(self) -> None:
+        from hub_client import is_background_instance
+
+        цепочка = [
+            "/home/x/.local/share/claude/versions/2.1.247 --fork-session --resume",
+            "claude bg-pty-host --bg-pty-host /tmp/cc-daemon/pty.sock",
+            "claude daemon run --origin transient",
+        ]
+        assert is_background_instance(цепочка) is True
+
+    def test_обычная_сессия_фоном_не_считается(self) -> None:
+        from hub_client import is_background_instance
+
+        цепочка = [
+            "claude --dangerously-load-development-channels server:telegram-motion --continue",
+            "bash -i",
+            "tmux new-session -d -s claude",
+        ]
+        assert is_background_instance(цепочка) is False
+
+    def test_без_доступа_к_дереву_считаем_себя_обычной(self) -> None:
+        from hub_client import is_background_instance
+
+        assert is_background_instance([]) is False
+
+    def test_упоминание_слов_в_чужой_команде_не_считается(self) -> None:
+        """На этом я попался: строка про фон в аргументах — ещё не фон."""
+        from hub_client import is_background_instance
+
+        цепочка = [
+            "/bin/bash -c grep bg-pty-host /var/log/syslog",
+            "python3 -c print('daemon run')",
+            "claude --continue",
+        ]
+        assert is_background_instance(цепочка) is False
+
+    def test_daemon_run_узнаётся_только_как_подкоманда(self) -> None:
+        from hub_client import is_background_instance
+
+        assert is_background_instance(["/home/x/.local/bin/claude daemon run --origin transient"]) is True
+        assert is_background_instance(["/usr/bin/other daemon run"]) is False
+
+
+def test_уступка_имени_не_вечна(config: HubConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Соперник мог закрыться — через время стоит попробовать снова."""
+    import hub_client
+
+    transport = FakeTransport([{"success": False, "message": "Agent x already registered"}])
+    client = HubClient(config, transport)
+    from hub_client import HubNameTaken
+
+    with pytest.raises(HubNameTaken):
+        client.list_channels()
+    with pytest.raises(HubNameTaken, match="занято"):
+        client.list_channels()  # сразу повторять не пытаемся
+
+    время = [hub_client.time.monotonic() + hub_client.RECONNECT_WINDOW_S + 1]
+    monkeypatch.setattr(hub_client.time, "monotonic", lambda: время[0])
+    transport.responses = [{"success": True, "secret": "s"}, {"success": True, "data": {}}]
+    client.list_channels()  # выждали — пробуем снова
+    assert len([c for c in transport.calls if c[1] == "/api/register"]) == 2
