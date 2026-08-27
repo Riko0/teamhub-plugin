@@ -13,6 +13,7 @@ Claude Code умеет принимать от MCP-сервера уведомл
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import time
@@ -28,6 +29,8 @@ NOTIFY_OFF: Final[str] = "off"
 DEFAULT_MAX_PER_HOUR: Final[int] = 20
 DEFAULT_MAX_CHARS: Final[int] = 600
 HOUR_S: Final[float] = 3600.0
+JOIN_TIMEOUT_S: Final[float] = 5.0
+SAFE_NAME: Final[re.Pattern[str]] = re.compile(r"[^\w.-]", re.UNICODE)
 
 
 def _log(message: str) -> None:
@@ -37,17 +40,42 @@ def _log(message: str) -> None:
 
 
 class NotificationWriter:
-    """Пишет уведомления в stdout, не сталкиваясь с основным циклом."""
+    """Единственная точка записи в stdout.
+
+    В stdout пишут двое: основной цикл с ответами и фоновый поток с
+    уведомлениями. Запись в канал не атомарна, поэтому оба обязаны идти
+    через один объект — иначе кадры перемешаются и соединение оборвётся.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
 
+    def write(self, frame: dict[str, Any]) -> None:
+        """Пишет готовый кадр JSON-RPC."""
+        line = json.dumps(frame, ensure_ascii=False) + "\n"
+        with self._lock:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
     def send(self, method: str, params: dict[str, Any]) -> None:
         """Отправляет уведомление JSON-RPC (без идентификатора запроса)."""
-        payload = {"jsonrpc": "2.0", "method": method, "params": params}
-        with self._lock:
-            sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+        self.write({"jsonrpc": "2.0", "method": method, "params": params})
+
+
+def _safe_name(value: str) -> str:
+    """Оставляет в имени только безопасные символы.
+
+    Имя приходит от постороннего агента и попадает в атрибуты служебного тега,
+    поэтому кавычки, скобки и переводы строк отсюда убираем.
+    """
+    cleaned = SAFE_NAME.sub("_", value).strip("_")
+    return cleaned[:64] or "?"
+
+
+def _mentions(agent_id: str, lowered: str) -> bool:
+    """Проверяет обращение по имени — целиком, а не по подстроке."""
+    pattern = rf"(?<![\w.-])@{re.escape(agent_id.lower())}(?![\w.-])"
+    return re.search(pattern, lowered) is not None
 
 
 def _extract(event: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -81,7 +109,8 @@ class NotifyPolicy(NamedTuple):
         if self.mode == NOTIFY_OFF:
             return False
         lowered = text.lower()
-        if f"@{agent_id.lower()}" in lowered or any(tag in lowered for tag in BROADCAST_TAGS):
+        broadcast = any(_mentions(tag.lstrip("@"), lowered) for tag in BROADCAST_TAGS)
+        if _mentions(agent_id, lowered) or broadcast:
             return True
         if self.channels and channel not in self.channels:
             return False
@@ -147,8 +176,10 @@ class ChannelPusher:
         _log(f"слежу за хабом для {self._agent_id}")
 
     def stop(self) -> None:
-        """Останавливает опрос."""
+        """Останавливает опрос и дожидается потока."""
         self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=JOIN_TIMEOUT_S)
 
     def _within_budget(self) -> bool:
         """Проверяет, не исчерпан ли лимит пробуждений за последний час.
@@ -186,7 +217,14 @@ class ChannelPusher:
             text = text[:limit] + f"… (обрезано, целиком — hub_read_messages канала {channel})"
         self._writer.send(
             CHANNEL_NOTIFICATION,
-            {"content": text, "meta": {"user": author, "channel": channel, "hub_agent": self._agent_id}},
+            {
+                "content": text,
+                "meta": {
+                    "user": _safe_name(author),
+                    "channel": _safe_name(channel),
+                    "hub_agent": _safe_name(self._agent_id),
+                },
+            },
         )
 
     def _run(self) -> None:
@@ -196,9 +234,12 @@ class ChannelPusher:
             try:
                 events = self._poll()
                 delay = POLL_INTERVAL_S
-            except RuntimeError as exc:
-                _log(f"опрос не удался, пробую реже: {exc}")
+            except Exception as exc:  # поток фоновый: упасть молча нельзя
+                _log(f"опрос не удался, пробую реже: {type(exc).__name__}: {exc}")
                 delay = POLL_BACKOFF_S
                 continue
             for event in events:
-                self._deliver(event)
+                try:
+                    self._deliver(event)
+                except Exception as exc:
+                    _log(f"событие не доставлено: {type(exc).__name__}: {exc}")

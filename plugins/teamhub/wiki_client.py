@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from hub_client import HubClient
+from hub_client import HubClient, HubRejected
 
 WIKI_MOD: Final[str] = "openagents.mods.workspace.wiki"
 MOD_ONLY: Final[str] = "mod_only"
@@ -41,8 +41,8 @@ class WikiClient:
         """
         try:
             return self._event("wiki.page.get", {"page_path": page_path})
-        except RuntimeError:
-            return {}
+        except HubRejected:
+            return {}  # сетевой сбой сюда не попадёт и наверх пойдёт как ошибка
 
     def search_pages(self, query: str) -> list[dict[str, Any]]:
         """Ищет страницы по запросу."""

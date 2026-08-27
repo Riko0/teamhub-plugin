@@ -90,6 +90,9 @@ def save_stored(values: dict[str, str]) -> Path:
     existing = _raw().get(AGENTS_KEY)
     if isinstance(existing, dict) and existing:
         payload[AGENTS_KEY] = existing
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # создаём пустым с нужными правами: между записью и chmod пароль иначе
+    # на мгновение оказался бы доступен всем
+    path.touch(mode=FILE_MODE, exist_ok=True)
     path.chmod(FILE_MODE)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path

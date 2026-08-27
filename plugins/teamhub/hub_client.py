@@ -36,6 +36,16 @@ from config_store import config_path, load_for_agent, load_stored
 from ssh_tunnel import SshTunnel
 
 REQUEST_TIMEOUT_S: Final[float] = 20.0
+
+
+class HubUnreachable(RuntimeError):
+    """Связи с хабом нет: сеть, таймаут, недоступный порт."""
+
+
+class HubRejected(RuntimeError):
+    """Хаб ответил, но отказал — например, запрошенной страницы не существует."""
+
+
 DEFAULT_REMOTE_PORT: Final[int] = 8700
 
 
@@ -181,9 +191,10 @@ class HubClient:
             with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_S) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"хаб ответил {exc.code} на {request.selector}") from exc
+            path = request.selector.split("?", 1)[0]  # в строке запроса лежит секрет
+            raise HubUnreachable(f"хаб ответил {exc.code} на {path}") from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"нет связи с хабом: {exc}") from exc
+            raise HubUnreachable(f"нет связи с хабом: {type(exc).__name__}") from exc
 
     def _get(self, path: str) -> dict[str, Any]:
         """Выполняет GET-запрос к хабу."""
@@ -212,7 +223,7 @@ class HubClient:
         """
         result = self._post("/api/register", {"agent_id": self.agent_id, "metadata": {}})
         if not result.get("success"):
-            raise RuntimeError(f"регистрация отклонена: {result.get('error_message')}")
+            raise HubRejected(f"регистрация отклонена: {result.get('error_message')}")
         self._secret = result.get("secret")
         _log(f"агент {self.agent_id} зарегистрирован")
 
@@ -242,7 +253,7 @@ class HubClient:
             body["secret"] = self._secret
         result = self._post("/api/send_event", body)
         if not result.get("success"):
-            raise RuntimeError(str(result.get("error_message") or "хаб отклонил событие"))
+            raise HubRejected(str(result.get("error_message") or "хаб отклонил событие"))
         return result.get("data") or {}
 
     def poll_events(self) -> list[dict[str, Any]]:

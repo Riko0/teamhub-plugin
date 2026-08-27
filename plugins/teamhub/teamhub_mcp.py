@@ -22,7 +22,7 @@ from wiki_client import WikiClient, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.10.0"
+SERVER_VERSION: Final[str] = "1.11.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -185,7 +185,7 @@ def _handle(state: BridgeState, request: dict[str, Any]) -> dict[str, Any] | Non
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
-def _serve(state: BridgeState) -> None:
+def _serve(state: BridgeState, writer: NotificationWriter) -> None:
     """Читает JSON-RPC из stdin и отвечает в stdout до закрытия потока."""
     for line in sys.stdin:
         stripped = line.strip()
@@ -196,36 +196,40 @@ def _serve(state: BridgeState) -> None:
         except json.JSONDecodeError:
             _log("получена строка, не являющаяся JSON")
             continue
+        if not isinstance(request, dict):  # батч и прочее нам не присылают
+            _log(f"пропускаю кадр неожиданного вида: {type(request).__name__}")
+            continue
         response = _handle(state, request)
         if response is not None:
-            sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+            writer.write(response)
 
 
 def _start() -> BridgeState:
-    """Готовит клиента хаба; при неудаче сервер всё равно поднимется."""
+    """Готовит клиента хаба; при неудаче сервер всё равно поднимется.
+
+    К хабу здесь намеренно не подключаемся: в режиме через ssh это заняло бы
+    десятки секунд, а Claude Code ждёт ответа на initialize. Подключение
+    произойдёт лениво — при первом обращении или из фонового опроса.
+    """
     try:
         hub = HubClient(load_config())
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:  # ValueError — мусор в ssh_port
         _log(f"нет настроек: {exc}")
         return BridgeState(hub=None, error=str(exc))
-    try:
-        hub.connect()
-    except RuntimeError as exc:  # хаб может подняться позже — повторим при вызове
-        _log(f"хаб недоступен, повторю при первом обращении: {exc}")
     return BridgeState(hub=hub, error=None)
 
 
 def main() -> None:
-    """Поднимает подключение к хабу и обслуживает MCP по stdio."""
+    """Обслуживает MCP по stdio; подключение к хабу идёт своим чередом."""
     state = _start()
+    writer = NotificationWriter()  # единственная точка записи в stdout
     pusher = None
     if state.hub is not None:
         policy = build_policy(*notify_settings(state.agent_id))
-        pusher = ChannelPusher(state.agent_id, state.hub.poll_events, NotificationWriter(), policy)
+        pusher = ChannelPusher(state.agent_id, state.hub.poll_events, writer, policy)
         pusher.start()
     try:
-        _serve(state)
+        _serve(state, writer)
     finally:
         if pusher is not None:
             pusher.stop()

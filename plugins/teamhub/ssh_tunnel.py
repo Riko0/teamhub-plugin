@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import socket
 import subprocess
+import threading
 import sys
 import time
 from typing import Final
@@ -47,6 +48,7 @@ class SshTunnel:
         self._identity_file = identity_file
         self._process: subprocess.Popen[bytes] | None = None
         self._local_port: int = 0
+        self._lock = threading.RLock()
 
     @property
     def local_port(self) -> int:
@@ -79,9 +81,20 @@ class SshTunnel:
     def start(self) -> None:
         """Поднимает туннель и ждёт готовности порта.
 
+        Повторный вызов при живом туннеле ничего не делает: иначе каждая
+        попытка переподключения оставляла бы за собой лишний процесс ssh.
+
         Raises:
             RuntimeError: если ssh не запустился или порт не открылся вовремя.
         """
+        with self._lock:
+            self._start_locked()
+
+    def _start_locked(self) -> None:
+        """Поднимает туннель; вызывать только под блокировкой."""
+        if self._process is not None and self._process.poll() is None:
+            return
+        self._reap()
         local_port = _free_port()
         try:
             process = subprocess.Popen(
@@ -103,15 +116,30 @@ class SshTunnel:
         process.terminate()
         raise RuntimeError(f"туннель до {self._destination} не открылся за {READY_TIMEOUT_S:.0f} с")
 
+    def _reap(self) -> None:
+        """Дожидается завершившегося процесса, чтобы не копить зомби."""
+        if self._process is not None and self._process.poll() is not None:
+            try:
+                self._process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            self._process = None
+
     def ensure_alive(self) -> None:
         """Перезапускает туннель, если процесс ssh умер."""
-        if self._process is not None and self._process.poll() is None:
-            return
-        _log("туннель отвалился, поднимаю заново")
-        self.start()
+        with self._lock:
+            if self._process is not None and self._process.poll() is None:
+                return
+            _log("туннель отвалился, поднимаю заново")
+            self._start_locked()
 
     def stop(self) -> None:
         """Закрывает туннель."""
+        with self._lock:
+            self._stop_locked()
+
+    def _stop_locked(self) -> None:
+        """Закрывает туннель; вызывать только под блокировкой."""
         if self._process is None:
             return
         self._process.terminate()
