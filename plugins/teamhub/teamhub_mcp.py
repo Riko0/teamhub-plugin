@@ -16,15 +16,28 @@ import sys
 from typing import Any, Final, NamedTuple
 
 from channel_push import ChannelPusher, NotificationWriter, build_policy
-from hub_client import HubClient, HubNameTaken, is_background_instance, load_config, notify_settings
+from hub_client import (
+    HubClient,
+    HubNameTaken,
+    is_background_instance,
+    load_config,
+    notify_settings,
+)
 from tools import DEFAULT_LIMIT, all_tools
 from wiki_client import WikiClient, format_history, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
 SERVER_VERSION: Final[str] = "1.20.0"
-TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
-CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
+TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (
+    RuntimeError,
+    ValueError,
+    KeyError,
+    TypeError,
+)
+CHANNEL_INSTRUCTIONS: Final[
+    str
+] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
 через hub_send_message. Входящие приходят сами, посреди работы, в виде
 <channel source="teamhub" user="..." channel="...">текст</channel>.
@@ -101,13 +114,45 @@ def _format_messages(messages: list[dict[str, Any]], channel: str) -> str:
     lines = []
     for item in messages:
         content = item.get("content")
-        raw = content.get("text", "") if isinstance(content, dict) else (item.get("text") or "")
+        raw = (
+            content.get("text", "")
+            if isinstance(content, dict)
+            else (item.get("text") or "")
+        )
         text = str(raw).strip()
-        if text:  # хаб дублирует каждую отправку пустой записью
-            lines.append(f"[{item.get('sender_id') or item.get('source_id') or '?'}] {text}")
+        if text:  # непропатченный хаб хранит здесь же запросы на чтение — без текста
+            lines.append(
+                f"[{item.get('sender_id') or item.get('source_id') or '?'}] {text}"
+            )
     if not lines:
         return f"канал {channel}: сообщений нет"
     return f"канал {channel}:\n" + "\n".join(lines)
+
+
+def _plural_messages(count: int) -> str:
+    """Подбирает форму слова «сообщение» для числа."""
+    if count % 100 in range(11, 15):
+        return "сообщений"
+    last = count % 10
+    if last == 1:
+        return "сообщение"
+    if last in (2, 3, 4):
+        return "сообщения"
+    return "сообщений"
+
+
+def _format_channels(channels: list[dict[str, Any]]) -> str:
+    """Превращает список каналов в текст для модели."""
+    if not channels:
+        return "каналов нет"
+    lines = []
+    for channel in channels:
+        line = f"{channel.get('name')} — {channel.get('description', '')}".rstrip(" —")
+        count = channel.get("message_count")
+        if isinstance(count, int) and count > 0:
+            line += f" ({count} {_plural_messages(count)})"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _call_tool(state: BridgeState, name: str, args: dict[str, Any]) -> str:
@@ -126,12 +171,11 @@ def _call_tool(state: BridgeState, name: str, args: dict[str, Any]) -> str:
         return f"отправлено от имени {hub.agent_id}"
     if name == "hub_read_messages":
         channel = args["channel"]
-        return _format_messages(hub.read_messages(channel, int(args.get("limit", DEFAULT_LIMIT))), channel)
+        return _format_messages(
+            hub.read_messages(channel, int(args.get("limit", DEFAULT_LIMIT))), channel
+        )
     if name == "hub_list_channels":
-        channels = hub.list_channels()
-        if not channels:
-            return "каналов нет"
-        return "\n".join(f"{c.get('name')} — {c.get('description', '')}".rstrip(" —") for c in channels)
+        return _format_channels(hub.list_channels())
     if name.startswith("hub_wiki_"):
         return _call_wiki(WikiClient(hub), name, args)
     raise ValueError(f"неизвестный инструмент: {name}")
@@ -179,10 +223,16 @@ def _handle_tools_call(state: BridgeState, params: dict[str, Any]) -> dict[str, 
     except HubNameTaken as exc:
         # штатная ситуация: фоновая задача Claude Code подняла второй экземпляр
         # в том же каталоге. Чат остаётся за основной сессией проекта
-        return {"content": [{"type": "text", "text": f"чат недоступен: {exc}"}], "isError": True}
+        return {
+            "content": [{"type": "text", "text": f"чат недоступен: {exc}"}],
+            "isError": True,
+        }
     except TOOL_ERRORS as exc:
         _log(f"инструмент {name} завершился ошибкой: {exc}")
-        return {"content": [{"type": "text", "text": f"ошибка: {exc}"}], "isError": True}
+        return {
+            "content": [{"type": "text", "text": f"ошибка: {exc}"}],
+            "isError": True,
+        }
     return {"content": [{"type": "text", "text": text}]}
 
 
@@ -196,8 +246,14 @@ def _handle(state: BridgeState, request: dict[str, Any]) -> dict[str, Any] | Non
         result: dict[str, Any] = {
             "protocolVersion": PROTOCOL_VERSION,
             # claude/channel разрешает серверу присылать входящие прямо в сессию
-            "capabilities": {"tools": {"listChanged": False}, "experimental": {"claude/channel": {}}},
-            "serverInfo": {"name": f"{SERVER_NAME}-{state.agent_id}", "version": SERVER_VERSION},
+            "capabilities": {
+                "tools": {"listChanged": False},
+                "experimental": {"claude/channel": {}},
+            },
+            "serverInfo": {
+                "name": f"{SERVER_NAME}-{state.agent_id}",
+                "version": SERVER_VERSION,
+            },
             "instructions": CHANNEL_INSTRUCTIONS.format(agent_id=state.agent_id),
         }
     elif method == "tools/list":
@@ -210,7 +266,9 @@ def _handle(state: BridgeState, request: dict[str, Any]) -> dict[str, Any] | Non
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
-def _serve(state: BridgeState, writer: NotificationWriter, pusher: ChannelPusher | None) -> None:
+def _serve(
+    state: BridgeState, writer: NotificationWriter, pusher: ChannelPusher | None
+) -> None:
     """Читает JSON-RPC из stdin и отвечает в stdout до закрытия потока.
 
     Фоновую доставку запускаем только после ответа на initialize: уведомление,
@@ -250,7 +308,9 @@ def _start() -> BridgeState:
         # имя выводится из каталога, а фоновая задача работает в том же —
         # иначе она отобрала бы чат у сессии, в которой человек работает
         _log("фоновая задача: чат не подключаем")
-        return BridgeState(hub=None, error="это фоновая задача, чат принадлежит основной сессии")
+        return BridgeState(
+            hub=None, error="это фоновая задача, чат принадлежит основной сессии"
+        )
     try:
         hub = HubClient(load_config())
     except (RuntimeError, ValueError) as exc:  # ValueError — мусор в ssh_port
@@ -266,7 +326,9 @@ def main() -> None:
     pusher = None
     if state.hub is not None:
         policy = build_policy(*notify_settings(state.agent_id))
-        pusher = ChannelPusher(state.agent_id, state.hub.poll_events, writer, policy, fatal=(HubNameTaken,))
+        pusher = ChannelPusher(
+            state.agent_id, state.hub.poll_events, writer, policy, fatal=(HubNameTaken,)
+        )
     try:
         _serve(state, writer, pusher)
     finally:
