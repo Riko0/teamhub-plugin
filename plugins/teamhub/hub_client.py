@@ -46,8 +46,16 @@ __all__ = [
 ]
 
 DEFAULT_REMOTE_PORT: Final[int] = 8700
-# по этим словам в отказе понимаем, что хаб забыл нашу регистрацию
-LOST_REGISTRATION: Final[tuple[str, ...]] = ("not registered", "unknown agent", "register")
+# по этим словам в отказе понимаем, что хаб забыл нашу регистрацию.
+# «authentication failed» сюда входит не для красоты: именно так отвечает
+# хаб после перезапуска, когда наш секрет уже недействителен
+LOST_REGISTRATION: Final[tuple[str, ...]] = (
+    "not registered",
+    "unknown agent",
+    "register",
+    "authentication failed",
+    "invalid or missing secret",
+)
 
 
 def _log(message: str) -> None:
@@ -260,10 +268,12 @@ class HubClient:
         query = urllib.parse.urlencode({"agent_id": self.agent_id, "secret": self._secret or ""})
         result = self._transport.get(f"/api/poll?{query}")
         if not result.get("success", True):
+            # любой отказ опроса после удачного подключения означает, что нас
+            # разлюбили: секрет протух или хаб перезапустился. Сбрасываем
+            # подключение — следующий круг зарегистрируется заново
             message = self._reason(result, "опрос отклонён")
-            if self._lost_registration(message):
-                _log("хаб забыл регистрацию, переподключусь на следующем круге")
-                self._invalidate()
+            _log(f"опрос отклонён ({message}), переподключусь на следующем круге")
+            self._invalidate()
             raise HubRejected(message)
         return list(result.get("messages") or [])
 

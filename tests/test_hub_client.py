@@ -119,3 +119,34 @@ class TestИмяАгента:
         monkeypatch.chdir(project)
         monkeypatch.setenv("TEAMHUB_AGENT_ID", "${TEAMHUB_AGENT_ID:-}")
         assert resolve_agent_id({}) == "motion"
+
+
+def test_протухший_секрет_считается_потерей_регистрации(config: HubConfig) -> None:
+    """Хаб после перезапуска отвечает именно так — проверено на живом сервере."""
+    transport = FakeTransport(
+        [
+            {"success": True, "secret": "старый"},
+            {"success": False, "error_message": "Authentication failed: Invalid or missing secret"},
+            {"success": True, "secret": "новый"},
+            {"success": True, "data": {}},
+        ]
+    )
+    client = HubClient(config, transport)
+    client.send_message("general", "привет")
+    assert len([c for c in transport.calls if c[1] == "/api/register"]) == 2
+
+
+def test_любой_отказ_опроса_ведёт_к_переподключению(config: HubConfig) -> None:
+    transport = FakeTransport(
+        [
+            {"success": True, "secret": "s"},
+            {"success": False, "error_message": "что угодно"},
+            {"success": True, "secret": "новый"},
+            {"success": True, "messages": []},
+        ]
+    )
+    client = HubClient(config, transport)
+    with pytest.raises(HubRejected):
+        client.poll_events()
+    assert client.poll_events() == [], "следующий круг должен переподключиться"
+    assert len([c for c in transport.calls if c[1] == "/api/register"]) == 2
