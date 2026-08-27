@@ -22,7 +22,7 @@ from wiki_client import WikiClient, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.15.0"
+SERVER_VERSION: Final[str] = "1.16.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -60,7 +60,11 @@ CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к команд�
   перенесите в вики и дайте ссылку на страницу.
 - Страницу коллеги правьте, если знаете точно; сомневаетесь — спросите
   в канале. Полностью переписывать чужую страницу без нужды не стоит.
-- Пути осмысленные, вида «проект/тема»; пишите по-русски, разметкой markdown."""
+- Путь — это ветка через слэши, от общего к частному: «motion/vae/обучение».
+  Вложенности у хаба нет, слэш лишь соглашение, но список сортируется по пути,
+  поэтому ветка держится вместе. Не заменяйте слэш дефисом.
+  Пишите по-русски, разметкой markdown.
+- Ищете, что уже описано в проекте, — hub_wiki_list с параметром prefix."""
 
 
 def _log(message: str) -> None:
@@ -133,7 +137,8 @@ def _call_wiki(wiki: WikiClient, name: str, args: dict[str, Any]) -> str:
         ValueError: если инструмент неизвестен.
     """
     if name == "hub_wiki_list":
-        return format_pages(wiki.list_pages())
+        prefix = args.get("prefix")
+        return format_pages(wiki.list_pages(prefix), prefix)
     if name == "hub_wiki_read":
         path = args["page_path"]
         return format_page(wiki.read_page(path), path)
@@ -144,7 +149,6 @@ def _call_wiki(wiki: WikiClient, name: str, args: dict[str, Any]) -> str:
             page_path=args["page_path"],
             content=args["content"],
             title=args.get("title"),
-            category=args.get("category"),
             tags=args.get("tags"),
         )
     raise ValueError(f"неизвестный инструмент вики: {name}")

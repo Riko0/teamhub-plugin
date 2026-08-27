@@ -30,9 +30,21 @@ class WikiClient:
         payload = {"event_name": name, "source_id": self._hub.agent_id, **payload}
         return self._hub.event(name, payload, visibility=MOD_ONLY, relevant_mod=WIKI_MOD)
 
-    def list_pages(self) -> list[dict[str, Any]]:
-        """Возвращает список страниц вики."""
-        return list(self._event("wiki.pages.list", {}).get("pages") or [])
+    def list_pages(self, prefix: str | None = None) -> list[dict[str, Any]]:
+        """Возвращает страницы вики, при желании только одну ветку.
+
+        Вложенности у хаба нет: путь со слэшами — просто имя. Поэтому ветка
+        отбирается здесь, по началу пути.
+        """
+        pages = list(self._event("wiki.pages.list", {}).get("pages") or [])
+        if prefix:
+            branch = prefix.strip("/")
+            pages = [
+                page
+                for page in pages
+                if str(page.get("page_path", "")).startswith(f"{branch}/") or page.get("page_path") == branch
+            ]
+        return sorted(pages, key=lambda page: str(page.get("page_path", "")))
 
     def read_page(self, page_path: str) -> dict[str, Any]:
         """Возвращает страницу целиком; для отсутствующей — пустой словарь.
@@ -57,7 +69,6 @@ class WikiClient:
         page_path: str,
         content: str,
         title: str | None = None,
-        category: str | None = None,
         tags: list[str] | None = None,
     ) -> str:
         """Создаёт страницу или переписывает существующую.
@@ -75,17 +86,18 @@ class WikiClient:
                 "page_path": page_path,
                 "title": title or page_path.rsplit("/", 1)[-1],
                 "wiki_content": content,
-                "category": category,
+                # category хаб хранит, но в списке не отдаёт и не отбирает по ней —
+                # бесполезное поле, не занимаем им внимание модели
                 "tags": tags or [],
             },
         )
         return f"страница {page_path} создана"
 
 
-def format_pages(pages: list[dict[str, Any]]) -> str:
+def format_pages(pages: list[dict[str, Any]], prefix: str | None = None) -> str:
     """Собирает список страниц в текст для модели."""
     if not pages:
-        return "в вики пока нет страниц"
+        return f"в ветке {prefix} страниц нет" if prefix else "в вики пока нет страниц"
     lines = []
     for page in pages:
         path = page.get("page_path", "?")

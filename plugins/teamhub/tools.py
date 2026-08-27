@@ -65,14 +65,29 @@ def wiki_tools() -> list[dict[str, Any]]:
     return [
         {
             "name": "hub_wiki_list",
-            "description": "Список страниц общей вики команды: что уже описано и кем.",
-            "inputSchema": _obj({}),
+            "description": (
+                "Список страниц общей вики команды: что уже описано и кем. "
+                "Можно ограничить одной веткой, передав её путь."
+            ),
+            "inputSchema": _obj(
+                {
+                    "prefix": {
+                        "type": "string",
+                        "description": "Показать только эту ветку, например motion/vae",
+                    }
+                }
+            ),
         },
         {
             "name": "hub_wiki_read",
             "description": "Прочитать страницу общей вики команды целиком.",
             "inputSchema": _obj(
-                {"page_path": {"type": "string", "description": "Путь страницы, например superres/пайплайн"}},
+                {
+                    "page_path": {
+                        "type": "string",
+                        "description": "Путь-ветка через слэши, например motion/vae/обучение",
+                    }
+                },
                 ["page_path"],
             ),
         },
@@ -94,11 +109,10 @@ def wiki_tools() -> list[dict[str, Any]]:
                 {
                     "page_path": {
                         "type": "string",
-                        "description": "Путь страницы, например superres/пайплайн",
+                        "description": "Путь-ветка через слэши, например motion/vae/обучение",
                     },
                     "content": {"type": "string", "description": "Содержимое в разметке markdown"},
                     "title": {"type": "string", "description": "Заголовок (по умолчанию — из пути)"},
-                    "category": {"type": "string", "description": "Категория (необязательно)"},
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},

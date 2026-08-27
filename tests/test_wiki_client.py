@@ -89,3 +89,41 @@ def test_страница_показывается_с_автором() -> None:
 
 def test_отсутствующая_страница_описывается_словами() -> None:
     assert "нет" in format_page({}, "путь/тема")
+
+
+class TestВеткиВики:
+    """Вложенности у хаба нет, ветка отбирается на нашей стороне."""
+
+    @staticmethod
+    def _со_страницами(config: HubConfig, пути: list[str]) -> WikiClient:
+        transport = FakeTransport(
+            [
+                {"success": True, "secret": "s"},
+                {"success": True, "data": {"pages": [{"page_path": p} for p in пути]}},
+            ]
+        )
+        return _wiki(config, transport)
+
+    def test_отбор_по_ветке_оставляет_своё(self, config: HubConfig) -> None:
+        wiki = self._со_страницами(
+            config, ["motion/vae/обучение", "motion/сплиты", "imagesr/метрики", "motion-другое/х"]
+        )
+        пути = [p["page_path"] for p in wiki.list_pages("motion")]
+        assert пути == ["motion/vae/обучение", "motion/сплиты"]
+
+    def test_соседняя_ветка_с_похожим_началом_не_цепляется(self, config: HubConfig) -> None:
+        wiki = self._со_страницами(config, ["motion/a", "motionx/b"])
+        assert [p["page_path"] for p in wiki.list_pages("motion")] == ["motion/a"]
+
+    def test_сама_ветка_тоже_попадает(self, config: HubConfig) -> None:
+        wiki = self._со_страницами(config, ["motion", "motion/vae"])
+        assert len(wiki.list_pages("motion")) == 2
+
+    def test_без_отбора_возвращается_всё_по_порядку(self, config: HubConfig) -> None:
+        wiki = self._со_страницами(config, ["б/я", "а/в", "а/б"])
+        assert [p["page_path"] for p in wiki.list_pages()] == ["а/б", "а/в", "б/я"]
+
+
+def test_пустая_ветка_не_выдаётся_за_пустую_вики() -> None:
+    assert "ветке motion/vae" in format_pages([], "motion/vae")
+    assert "вики пока нет" in format_pages([])
