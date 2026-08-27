@@ -200,7 +200,8 @@ claude --dangerously-load-development-channels plugin:teamhub@teamhub-marketplac
 | `hub_wiki_list` | список страниц вики, можно одной веткой |
 | `hub_wiki_read` | прочитать страницу |
 | `hub_wiki_search` | найти страницы по запросу |
-| `hub_wiki_write` | создать страницу или переписать существующую |
+| `hub_wiki_append` | дописать раздел, не пересылая страницу целиком |
+| `hub_wiki_write` | создать страницу или переписать её целиком |
 
 Проверить после установки: спросите Клода «прочитай канал general».
 

@@ -127,3 +127,36 @@ class TestВеткиВики:
 def test_пустая_ветка_не_выдаётся_за_пустую_вики() -> None:
     assert "ветке motion/vae" in format_pages([], "motion/vae")
     assert "вики пока нет" in format_pages([])
+
+
+class TestДописывание:
+    """Хаб умеет только заменять страницу целиком — склейка на нашей стороне."""
+
+    def test_к_существующей_добавляется_в_конец(self, config: HubConfig) -> None:
+        transport = FakeTransport(
+            [
+                {"success": True, "secret": "s"},
+                {"success": True, "data": {"wiki_content": "# Тема\n\nбыло"}},
+                {"success": True, "data": {}},
+            ]
+        )
+        assert "дополнена" in _wiki(config, transport).append_to_page("тема", "стало")
+        правка = [c for c in transport.calls if c[1] == "/api/send_event"][-1][2]
+        assert правка["event_name"] == "wiki.page.edit"
+        текст = правка["payload"]["wiki_content"]
+        assert текст.startswith("# Тема") and текст.rstrip().endswith("стало")
+
+    def test_несуществующая_страница_создаётся(self, config: HubConfig) -> None:
+        transport = FakeTransport(
+            [
+                {"success": True, "secret": "s"},
+                {"success": False, "message": "Page not found: тема"},
+                {"success": True, "data": {}},
+            ]
+        )
+        assert "создана" in _wiki(config, transport).append_to_page("тема", "первый раздел")
+
+    def test_обрыв_связи_не_превращается_в_создание(self, config: HubConfig) -> None:
+        wiki = _wiki(config, ОтказавшийТранспорт(HubUnreachable("сеть")))
+        with pytest.raises(HubUnreachable):
+            wiki.append_to_page("тема", "текст")

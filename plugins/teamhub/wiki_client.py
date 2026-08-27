@@ -93,6 +93,23 @@ class WikiClient:
         )
         return f"страница {page_path} создана"
 
+    def append_to_page(self, page_path: str, text: str, title: str | None = None) -> str:
+        """Дописывает раздел в конец страницы, не пересылая её целиком.
+
+        Хаб умеет только заменять страницу, поэтому склейка происходит здесь.
+        Так агенту не приходится тащить через контекст весь прежний текст.
+
+        Returns:
+            Короткое описание того, что произошло.
+        """
+        existing = self.read_page(page_path)
+        body = existing.get("wiki_content")
+        if body is None:
+            return self.write_page(page_path, text, title=title)
+        joined = f"{body.rstrip()}\n\n{text.strip()}\n"
+        self._event("wiki.page.edit", {"page_path": page_path, "wiki_content": joined})
+        return f"страница {page_path} дополнена"
+
 
 def format_pages(pages: list[dict[str, Any]], prefix: str | None = None) -> str:
     """Собирает список страниц в текст для модели."""

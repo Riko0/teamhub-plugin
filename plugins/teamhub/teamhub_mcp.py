@@ -22,7 +22,7 @@ from wiki_client import WikiClient, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.16.0"
+SERVER_VERSION: Final[str] = "1.17.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -58,6 +58,9 @@ CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к команд�
   Не идут: сиюминутная переписка, пересказ чата, черновые мысли.
 - Разобрались в чате до чего-то стоящего — не оставляйте это в чате,
   перенесите в вики и дайте ссылку на страницу.
+- Добавить раздел к существующей странице — hub_wiki_append. Переписывать
+  её целиком через hub_wiki_write стоит лишь когда меняется сама структура:
+  это дороже и рискует затереть чужую правку.
 - Страницу коллеги правьте, если знаете точно; сомневаетесь — спросите
   в канале. Полностью переписывать чужую страницу без нужды не стоит.
 - Путь — это ветка через слэши, от общего к частному: «motion/vae/обучение».
@@ -144,6 +147,8 @@ def _call_wiki(wiki: WikiClient, name: str, args: dict[str, Any]) -> str:
         return format_page(wiki.read_page(path), path)
     if name == "hub_wiki_search":
         return format_pages(wiki.search_pages(args["query"]))
+    if name == "hub_wiki_append":
+        return wiki.append_to_page(args["page_path"], args["text"], args.get("title"))
     if name == "hub_wiki_write":
         return wiki.write_page(
             page_path=args["page_path"],
