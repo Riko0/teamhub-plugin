@@ -79,15 +79,27 @@ def load_for_agent(agent_id: str) -> dict[str, str]:
 
 
 def save_stored(values: dict[str, str]) -> Path:
-    """Сохраняет общие настройки, не трогая персональные надстройки агентов.
+    """Дополняет сохранённые настройки, не теряя того, о чём не спрашивали.
+
+    Диалог установки спрашивает не про всё: настройки уведомлений и надстройки
+    агентов правят руками. Поэтому здесь именно слияние — иначе повторный
+    запуск установки молча стирал бы их. Пустая строка означает «удалить».
 
     Returns:
         Путь к записанному файлу.
     """
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=DIR_MODE)
-    payload: dict[str, Any] = _scalars(values)
-    existing = _raw().get(AGENTS_KEY)
+    raw = _raw()
+    payload: dict[str, Any] = _scalars(raw)
+    for key, value in values.items():
+        if key not in KNOWN_KEYS:
+            continue
+        if value:
+            payload[key] = str(value)
+        else:
+            payload.pop(key, None)  # пустое значение стирает настройку
+    existing = raw.get(AGENTS_KEY)
     if isinstance(existing, dict) and existing:
         payload[AGENTS_KEY] = existing
     # создаём пустым с нужными правами: между записью и chmod пароль иначе

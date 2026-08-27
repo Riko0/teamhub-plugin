@@ -47,6 +47,8 @@ class HubRejected(RuntimeError):
 
 
 DEFAULT_REMOTE_PORT: Final[int] = 8700
+# по этим словам в отказе понимаем, что хаб забыл нашу регистрацию
+LOST_REGISTRATION: Final[tuple[str, ...]] = ("not registered", "unknown agent", "register")
 
 
 def _log(message: str) -> None:
@@ -140,6 +142,7 @@ class HubClient:
         self._config = config
         self._secret: str | None = None
         self._connected = False
+        self._closed = False
         self._connect_lock = threading.Lock()
         self._tunnel: SshTunnel | None = None
         if config.ssh_destination:
@@ -165,16 +168,33 @@ class HubClient:
         self._connected = True
 
     def ensure_connected(self) -> None:
-        """Подключается, если это ещё не удалось: хаб мог быть недоступен на старте.
+        """Подключается, если это ещё не удалось или регистрация потерялась.
 
         Вызывается и из фонового опроса, поэтому под блокировкой.
+
+        Raises:
+            HubRejected: если клиент уже закрыт и переподключаться нельзя.
         """
+        if self._closed:
+            raise HubRejected("клиент закрыт")
         with self._connect_lock:
             if not self._connected:
                 self.connect()
 
+    def _invalidate(self) -> None:
+        """Помечает регистрацию потерянной — следующий вызов переподключится."""
+        with self._connect_lock:
+            self._connected = False
+            self._secret = None
+
+    def _lost_registration(self, message: str) -> bool:
+        """Похож ли отказ хаба на забытую регистрацию."""
+        lowered = message.lower()
+        return any(marker in lowered for marker in LOST_REGISTRATION)
+
     def close(self) -> None:
-        """Закрывает туннель, если он поднимался."""
+        """Закрывает клиента навсегда: переподключений больше не будет."""
+        self._closed = True
         if self._tunnel is not None:
             self._tunnel.stop()
         self._connected = False
@@ -192,7 +212,7 @@ class HubClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             path = request.selector.split("?", 1)[0]  # в строке запроса лежит секрет
-            raise HubUnreachable(f"хаб ответил {exc.code} на {path}") from exc
+            raise HubRejected(f"хаб ответил {exc.code} на {path}") from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise HubUnreachable(f"нет связи с хабом: {type(exc).__name__}") from exc
 
@@ -233,6 +253,7 @@ class HubClient:
         payload: dict[str, Any],
         visibility: str = "network",
         relevant_mod: str | None = None,
+        retry: bool = True,
     ) -> dict[str, Any]:
         """Отправляет событие хабу и возвращает полезную нагрузку ответа.
 
@@ -252,9 +273,15 @@ class HubClient:
         if self._secret:
             body["secret"] = self._secret
         result = self._post("/api/send_event", body)
-        if not result.get("success"):
-            raise HubRejected(str(result.get("error_message") or "хаб отклонил событие"))
-        return result.get("data") or {}
+        if result.get("success"):
+            return result.get("data") or {}
+        # причина бывает и в error_message, и в message — берём что есть
+        message = str(result.get("error_message") or result.get("message") or "хаб отклонил событие")
+        if not retry or not self._lost_registration(message):
+            raise HubRejected(message)
+        _log("хаб забыл регистрацию, подключаюсь заново")
+        self._invalidate()
+        return self.event(event_name, payload, visibility, relevant_mod, retry=False)
 
     def poll_events(self) -> list[dict[str, Any]]:
         """Забирает накопленные для агента события хаба.
@@ -265,6 +292,12 @@ class HubClient:
         self.ensure_connected()
         query = urllib.parse.urlencode({"agent_id": self.agent_id, "secret": self._secret or ""})
         result = self._get(f"/api/poll?{query}")
+        if not result.get("success", True):
+            message = str(result.get("error_message") or result.get("message") or "опрос отклонён")
+            if self._lost_registration(message):
+                _log("хаб забыл регистрацию, переподключусь на следующем круге")
+                self._invalidate()
+            raise HubRejected(message)
         return list(result.get("messages") or [])
 
     def send_message(self, channel: str, text: str) -> None:

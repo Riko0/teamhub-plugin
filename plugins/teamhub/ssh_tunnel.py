@@ -17,6 +17,7 @@ from typing import Final
 CONNECT_POLL_S: Final[float] = 0.25
 READY_TIMEOUT_S: Final[float] = 20.0
 PROBE_TIMEOUT_S: Final[float] = 1.0
+TERMINATE_TIMEOUT_S: Final[float] = 5.0
 
 
 def _log(message: str) -> None:
@@ -30,6 +31,19 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+def _terminate(process: subprocess.Popen[bytes]) -> None:
+    """Гасит процесс и дожидается его, чтобы не оставлять зомби."""
+    process.terminate()
+    try:
+        process.wait(timeout=TERMINATE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=TERMINATE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            _log("процесс ssh не завершился даже по kill")
 
 
 def _port_accepts(port: int) -> bool:
@@ -48,6 +62,7 @@ class SshTunnel:
         self._identity_file = identity_file
         self._process: subprocess.Popen[bytes] | None = None
         self._local_port: int = 0
+        self._stopped = False
         self._lock = threading.RLock()
 
     @property
@@ -91,7 +106,13 @@ class SshTunnel:
             self._start_locked()
 
     def _start_locked(self) -> None:
-        """Поднимает туннель; вызывать только под блокировкой."""
+        """Поднимает туннель; вызывать только под блокировкой.
+
+        После stop() больше не поднимаемся: иначе фоновый поток, доживающий
+        свой круг при завершении, оставил бы за собой осиротевший ssh.
+        """
+        if self._stopped:
+            raise RuntimeError("туннель остановлен")
         if self._process is not None and self._process.poll() is None:
             return
         self._reap()
@@ -113,7 +134,7 @@ class SshTunnel:
                 return
             time.sleep(CONNECT_POLL_S)
 
-        process.terminate()
+        _terminate(process)  # иначе останется зомби
         raise RuntimeError(f"туннель до {self._destination} не открылся за {READY_TIMEOUT_S:.0f} с")
 
     def _reap(self) -> None:
@@ -140,11 +161,8 @@ class SshTunnel:
 
     def _stop_locked(self) -> None:
         """Закрывает туннель; вызывать только под блокировкой."""
+        self._stopped = True
         if self._process is None:
             return
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
+        _terminate(self._process)
         self._process = None

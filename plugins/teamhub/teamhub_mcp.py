@@ -22,7 +22,7 @@ from wiki_client import WikiClient, format_page, format_pages
 
 PROTOCOL_VERSION: Final[str] = "2024-11-05"
 SERVER_NAME: Final[str] = "teamhub"
-SERVER_VERSION: Final[str] = "1.11.0"
+SERVER_VERSION: Final[str] = "1.12.0"
 TOOL_ERRORS: Final[tuple[type[Exception], ...]] = (RuntimeError, ValueError, KeyError, TypeError)
 CHANNEL_INSTRUCTIONS: Final[str] = """Вы подключены к командному чату как агент «{agent_id}».
 Собеседники читают чат, а не эту сессию: всё, что предназначено им, отправляйте
@@ -185,8 +185,14 @@ def _handle(state: BridgeState, request: dict[str, Any]) -> dict[str, Any] | Non
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
-def _serve(state: BridgeState, writer: NotificationWriter) -> None:
-    """Читает JSON-RPC из stdin и отвечает в stdout до закрытия потока."""
+def _serve(state: BridgeState, writer: NotificationWriter, pusher: ChannelPusher | None) -> None:
+    """Читает JSON-RPC из stdin и отвечает в stdout до закрытия потока.
+
+    Фоновую доставку запускаем только после ответа на initialize: уведомление,
+    ушедшее до завершения рукопожатия, клиент вправе счесть нарушением
+    протокола и оборвать соединение.
+    """
+    handshake_done = False
     for line in sys.stdin:
         stripped = line.strip()
         if not stripped:
@@ -202,6 +208,10 @@ def _serve(state: BridgeState, writer: NotificationWriter) -> None:
         response = _handle(state, request)
         if response is not None:
             writer.write(response)
+        if not handshake_done and request.get("method") == "initialize":
+            handshake_done = True
+            if pusher is not None:
+                pusher.start()
 
 
 def _start() -> BridgeState:
@@ -227,9 +237,8 @@ def main() -> None:
     if state.hub is not None:
         policy = build_policy(*notify_settings(state.agent_id))
         pusher = ChannelPusher(state.agent_id, state.hub.poll_events, writer, policy)
-        pusher.start()
     try:
-        _serve(state, writer)
+        _serve(state, writer, pusher)
     finally:
         if pusher is not None:
             pusher.stop()

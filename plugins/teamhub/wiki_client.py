@@ -16,6 +16,7 @@ from hub_client import HubClient, HubRejected
 WIKI_MOD: Final[str] = "openagents.mods.workspace.wiki"
 MOD_ONLY: Final[str] = "mod_only"
 PREVIEW_CHARS: Final[int] = 200
+NOT_FOUND: Final[tuple[str, ...]] = ("not found", "does not exist", "не найдена")
 
 
 class WikiClient:
@@ -41,8 +42,10 @@ class WikiClient:
         """
         try:
             return self._event("wiki.page.get", {"page_path": page_path})
-        except HubRejected:
-            return {}  # сетевой сбой сюда не попадёт и наверх пойдёт как ошибка
+        except HubRejected as exc:
+            if not any(marker in str(exc).lower() for marker in NOT_FOUND):
+                raise  # прочие отказы — не повод считать страницу несуществующей
+            return {}
 
     def search_pages(self, query: str) -> list[dict[str, Any]]:
         """Ищет страницы по запросу."""

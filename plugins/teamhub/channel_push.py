@@ -31,6 +31,7 @@ DEFAULT_MAX_CHARS: Final[int] = 600
 HOUR_S: Final[float] = 3600.0
 JOIN_TIMEOUT_S: Final[float] = 5.0
 SAFE_NAME: Final[re.Pattern[str]] = re.compile(r"[^\w.-]", re.UNICODE)
+MENTION: Final[re.Pattern[str]] = re.compile(r"(?<![\w.-])@([\w.-]+)", re.UNICODE)
 
 
 def _log(message: str) -> None:
@@ -52,7 +53,9 @@ class NotificationWriter:
 
     def write(self, frame: dict[str, Any]) -> None:
         """Пишет готовый кадр JSON-RPC."""
-        line = json.dumps(frame, ensure_ascii=False) + "\n"
+        # чужой текст может содержать одиночный суррогат: он валиден в JSON,
+        # но при записи в stdout выбросил бы UnicodeEncodeError и убил сервер
+        line = json.dumps(frame, ensure_ascii=False).encode("utf-8", "replace").decode("utf-8") + "\n"
         with self._lock:
             sys.stdout.write(line)
             sys.stdout.flush()
@@ -73,9 +76,18 @@ def _safe_name(value: str) -> str:
 
 
 def _mentions(agent_id: str, lowered: str) -> bool:
-    """Проверяет обращение по имени — целиком, а не по подстроке."""
-    pattern = rf"(?<![\w.-])@{re.escape(agent_id.lower())}(?![\w.-])"
-    return re.search(pattern, lowered) is not None
+    """Проверяет обращение по имени — целиком, а не по подстроке.
+
+    Разбираем текст на обращения и сравниваем имя целиком. Так «@api» не
+    сработает на «@api-gateway», но сработает на «@api.» — точка и дефис
+    встречаются и внутри имён, и как знаки препинания после них.
+    """
+    name = agent_id.lower()
+    for found in MENTION.finditer(lowered):
+        token = found.group(1)
+        if token == name or token.rstrip(".-") == name:
+            return True
+    return False
 
 
 def _extract(event: dict[str, Any]) -> tuple[str, str, str] | None:
@@ -214,7 +226,7 @@ class ChannelPusher:
             return
         limit = self._policy.max_chars
         if 0 < limit < len(text):
-            text = text[:limit] + f"… (обрезано, целиком — hub_read_messages канала {channel})"
+            text = text[:limit] + f"… (обрезано, целиком — hub_read_messages канала {_safe_name(channel)})"
         self._writer.send(
             CHANNEL_NOTIFICATION,
             {

@@ -43,12 +43,16 @@ def _collect(stored: dict[str, str]) -> dict[str, str]:
     """Собирает все настройки в диалоге с пользователем."""
     values: dict[str, str] = {}
     mode = _ask_mode(stored)
+    # сохранение сливается с прежним, поэтому неиспользуемый способ гасим явно:
+    # иначе оставшийся ssh перебил бы прямой адрес — туннель имеет приоритет
     if mode == "ssh":
         values["ssh"] = _ask("Сервер в виде user@host", stored.get("ssh"), required=True)
         values["ssh_port"] = _ask("Порт хаба на сервере", stored.get("ssh_port") or str(DEFAULT_REMOTE_PORT))
         values["ssh_key"] = _ask("Путь к приватному ключу (пусто — как обычно)", stored.get("ssh_key"))
+        values["url"] = ""
     else:
         values["url"] = _ask("Адрес хаба, например https://хост:8443", stored.get("url"), required=True)
+        values["ssh"] = values["ssh_port"] = values["ssh_key"] = ""
     values.update(_collect_name(stored))
     values["auth"] = _ask("Логин:пароль, если хаб за авторизацией (пусто — нет)", stored.get("auth"))
     return values
@@ -63,8 +67,8 @@ def _collect_name(stored: dict[str, str]) -> dict[str, str]:
         prefix = _ask("Ваше имя (к нему добавится имя проекта)", stored.get("name_prefix"))
         example = f"{prefix}-superres" if prefix else "superres"
         print(f"  в проекте superres вас будут видеть как: {example}")
-        return {"name_prefix": prefix}
-    return {"agent_id": _ask("Ваше имя в чате", stored.get("agent_id"), required=True)}
+        return {"name_prefix": prefix, "agent_id": ""}  # пустое стирает прежний выбор
+    return {"agent_id": _ask("Ваше имя в чате", stored.get("agent_id"), required=True), "name_prefix": ""}
 
 
 def _to_config(values: dict[str, str]) -> HubConfig:
