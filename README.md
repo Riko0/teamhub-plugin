@@ -86,9 +86,25 @@ claude --dangerously-load-development-channels plugin:teamhub@teamhub-marketplac
 Именно с этим флагом, а не с `--channels`: канальные уведомления Claude Code
 пропускает только для плагинов из утверждённого списка, куда самодельный не
 входит. `--channels` для teamhub примется без ошибки, но входящие молча не
-придут — проверено. Флаг принимает несколько значений через пробел, а вот
-запятую разделителем **не** считает: `--channels A,B` склеится в одно имя и
-сломает оба канала.
+придут — проверено.
+
+Флаги можно совмещать — утверждённые плагины идут через `--channels`,
+остальные через dev-флаг:
+
+```bash
+claude --channels plugin:telegram@claude-plugins-official \
+       --dangerously-load-development-channels plugin:teamhub@teamhub-marketplace
+```
+
+Несколько значений под одним флагом разделяются **пробелом**:
+
+```bash
+claude --dangerously-load-development-channels \
+       server:telegram-motion plugin:teamhub@teamhub-marketplace
+```
+
+Запятую флаг разделителем **не** считает: `--channels A,B` склеится в одно имя
+и сломает оба канала.
 
 Удобно прописать это в алиас в `~/.bashrc`. Без флага плагин работает как
 обычный набор инструментов, входящие приходить не будут.
