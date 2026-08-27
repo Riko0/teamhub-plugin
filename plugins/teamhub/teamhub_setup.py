@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from config_store import load_stored, save_stored
 from hub_client import DEFAULT_REMOTE_PORT, HubClient, HubConfig, build_auth_header, resolve_agent_id
@@ -59,16 +60,34 @@ def _collect(stored: dict[str, str]) -> dict[str, str]:
 
 
 def _collect_name(stored: dict[str, str]) -> dict[str, str]:
-    """Спрашивает, как называть агента: одинаково везде или по проектам."""
-    print("\nПлагин один на компьютер, а сессий у вас несколько.")
-    print("Можно писать под одним именем везде — или своим именем в каждом проекте.\n")
-    per_project = _ask("Разные имена для разных проектов? да/нет", "да").lower().startswith("д")
+    """Спрашивает, как называть агента в чате.
+
+    Сначала само имя, потом — добавлять ли к нему проект. По умолчанию имя
+    берётся из каталога проекта: чаще всего это и есть нужное, а плагин один
+    на компьютер, и сессий у человека несколько.
+    """
+    project = Path.cwd().name or "проект"
+    print("\nПлагин один на компьютер, а сессий Claude Code у вас несколько.")
+    print(f"Если ничего не вводить, именем станет название каталога — сейчас это «{project}».\n")
+
+    current = stored.get("name_prefix") or stored.get("agent_id") or ""
+    name = _ask(f"Как называть вас в чате (пусто — «{project}»)", current)
+    if not name:
+        return {"agent_id": "", "name_prefix": ""}
+
+    per_project = (
+        _ask(
+            f"Добавлять к имени название проекта? Тогда здесь вы будете «{name}-{project}». да/нет",
+            "да",
+        )
+        .lower()
+        .startswith("д")
+    )
     if per_project:
-        prefix = _ask("Ваше имя (к нему добавится имя проекта)", stored.get("name_prefix"))
-        example = f"{prefix}-superres" if prefix else "superres"
-        print(f"  в проекте superres вас будут видеть как: {example}")
-        return {"name_prefix": prefix, "agent_id": ""}  # пустое стирает прежний выбор
-    return {"agent_id": _ask("Ваше имя в чате", stored.get("agent_id"), required=True), "name_prefix": ""}
+        print(f"  в этом проекте вас увидят как: {name}-{project}")
+        return {"name_prefix": name, "agent_id": ""}
+    print(f"  во всех проектах вас увидят как: {name}")
+    return {"agent_id": name, "name_prefix": ""}
 
 
 def _to_config(values: dict[str, str]) -> HubConfig:
@@ -113,10 +132,14 @@ def main() -> None:
     if not _verify(values):
         print("Настройки сохранены, но подключиться не удалось — проверьте адрес и доступ.")
         sys.exit(1)
-    if values.get("name_prefix"):
-        print(f"Готово. Имя в чате: {values['name_prefix']}-<проект>. Перезапустите Claude Code.")
+    prefix, fixed = values.get("name_prefix"), values.get("agent_id")
+    if prefix:
+        имя = f"{prefix}-<проект>"
+    elif fixed:
+        имя = fixed
     else:
-        print(f"Готово. Имя в чате: {values.get('agent_id')}. Перезапустите Claude Code.")
+        имя = "<имя каталога проекта>"
+    print(f"Готово. Имя в чате: {имя}. Перезапустите Claude Code.")
 
 
 if __name__ == "__main__":
