@@ -377,3 +377,25 @@ def test_сорвавшееся_снятие_не_мешает_закрытьс�
     клиент.connect()
     клиент.close()
     assert transport.closed
+
+
+def test_имя_не_удваивается(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Каталог, названный именем человека, не должен давать «ivan-ivan».
+
+    Так вышло у коллеги: он ввёл своё имя, согласился добавлять проект
+    и работал в папке с тем же названием.
+    """
+    каталог = tmp_path / "ivan"
+    каталог.mkdir()
+    monkeypatch.chdir(каталог)
+    assert resolve_agent_id({"name_prefix": "ivan"}) == "ivan"
+
+
+def test_имя_с_префиксом_и_другим_проектом(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Обычный случай не затронут: префикс и проект склеиваются как прежде."""
+    каталог = tmp_path / "motion"
+    каталог.mkdir()
+    monkeypatch.chdir(каталог)
+    assert resolve_agent_id({"name_prefix": "ivan"}) == "ivan-motion"

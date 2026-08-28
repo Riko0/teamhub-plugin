@@ -177,7 +177,10 @@ def resolve_agent_id(stored: dict[str, str]) -> str:
         return explicit
     project = Path.cwd().name or "unknown"
     prefix = _setting(stored, "TEAMHUB_NAME_PREFIX", "name_prefix")
-    return f"{prefix}-{project}" if prefix else project
+    if not prefix or prefix == project:
+        # Каталог, названный именем человека, иначе дал бы «ivan-ivan».
+        return project
+    return f"{prefix}-{project}"
 
 
 def notify_settings(
