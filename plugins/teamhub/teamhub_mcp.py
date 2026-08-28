@@ -176,6 +176,18 @@ def _call_tool(state: BridgeState, name: str, args: dict[str, Any]) -> str:
         )
     if name == "hub_list_channels":
         return _format_channels(hub.list_channels())
+    if name == "hub_create_channel":
+        data = hub.create_channel(args["channel"], args.get("description", ""))
+        channel = data.get("channel") or args["channel"]
+        return (
+            f"канал {channel} создан"
+            if data.get("created")
+            else f"канал {channel} уже был"
+        )
+    if name == "hub_delete_channel":
+        data = hub.delete_channel(args["channel"])
+        removed = data.get("messages_removed") or 0
+        return f"канал {args['channel']} удалён, сообщений убрано: {removed}"
     if name.startswith("hub_wiki_"):
         return _call_wiki(WikiClient(hub), name, args)
     raise ValueError(f"неизвестный инструмент: {name}")

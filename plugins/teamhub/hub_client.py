@@ -134,7 +134,12 @@ def process_chain(depth: int = CHAIN_DEPTH) -> list[str]:
             if pid <= 1:
                 break
             status = Path(f"/proc/{pid}")
-            cmdline = (status / "cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+            cmdline = (
+                (status / "cmdline")
+                .read_bytes()
+                .replace(b"\x00", b" ")
+                .decode(errors="replace")
+            )
             chain.append(cmdline.strip())
             stat_line = (status / "stat").read_text()
             pid = int(stat_line.rsplit(")", 1)[1].split()[1])
@@ -175,7 +180,9 @@ def resolve_agent_id(stored: dict[str, str]) -> str:
     return f"{prefix}-{project}" if prefix else project
 
 
-def notify_settings(agent_id: str) -> tuple[str | None, str | None, str | None, str | None]:
+def notify_settings(
+    agent_id: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
     """Настройки уведомлений с учётом персональных надстроек этого агента."""
     stored = load_for_agent(agent_id)
     return (
@@ -198,13 +205,17 @@ def load_config() -> HubConfig:
     url = (_setting(stored, "TEAMHUB_URL", "url") or "").rstrip("/") or None
     ssh_destination = _setting(stored, "TEAMHUB_SSH", "ssh")
     if not url and not ssh_destination:
-        raise RuntimeError(f"не задан адрес хаба, файл настроек отсутствует ({config_path()})")
+        raise RuntimeError(
+            f"не задан адрес хаба, файл настроек отсутствует ({config_path()})"
+        )
     return HubConfig(
         agent_id=agent_id,
         auth_header=build_auth_header(_setting(stored, "TEAMHUB_AUTH", "auth")),
         url=url,
         ssh_destination=ssh_destination,
-        ssh_port=int(_setting(stored, "TEAMHUB_SSH_PORT", "ssh_port") or DEFAULT_REMOTE_PORT),
+        ssh_port=int(
+            _setting(stored, "TEAMHUB_SSH_PORT", "ssh_port") or DEFAULT_REMOTE_PORT
+        ),
         ssh_key=_setting(stored, "TEAMHUB_SSH_KEY", "ssh_key"),
     )
 
@@ -222,7 +233,9 @@ class HubClient:
 
     def __init__(self, config: HubConfig, transport: Transport | None = None) -> None:
         self._config = config
-        self._transport = transport if transport is not None else build_transport(config)
+        self._transport = (
+            transport if transport is not None else build_transport(config)
+        )
         self._secret: str | None = None
         self._connected = False
         self._closed = False
@@ -252,7 +265,9 @@ class HubClient:
         if self._closed:
             raise HubRejected("клиент закрыт")
         if time.monotonic() < self._name_taken_until:
-            raise HubNameTaken(f"имя {self.agent_id} занято другой сессией этого проекта")
+            raise HubNameTaken(
+                f"имя {self.agent_id} занято другой сессией этого проекта"
+            )
         with self._connect_lock:
             if not self._connected:
                 self.connect()
@@ -276,7 +291,9 @@ class HubClient:
             # уступаем не навсегда: соперник мог просто закрыться
             self._name_taken_until = now + RECONNECT_WINDOW_S
             self._reconnects.clear()
-            raise HubNameTaken(f"имя {self.agent_id} удерживает другая сессия этого проекта — уступаю")
+            raise HubNameTaken(
+                f"имя {self.agent_id} удерживает другая сессия этого проекта — уступаю"
+            )
 
     def _invalidate(self) -> None:
         """Помечает регистрацию потерянной — следующий вызов переподключится."""
@@ -301,12 +318,16 @@ class HubClient:
         Raises:
             HubRejected: если хаб отклонил регистрацию.
         """
-        result = self._transport.post("/api/register", {"agent_id": self.agent_id, "metadata": {}})
+        result = self._transport.post(
+            "/api/register", {"agent_id": self.agent_id, "metadata": {}}
+        )
         if not result.get("success"):
             reason = self._reason(result, "без объяснения")
             if NAME_TAKEN in reason.lower():
                 self._name_taken_until = time.monotonic() + RECONNECT_WINDOW_S
-                raise HubNameTaken(f"имя {self.agent_id} занято основной сессией этого проекта")
+                raise HubNameTaken(
+                    f"имя {self.agent_id} занято основной сессией этого проекта"
+                )
             raise HubRejected(f"регистрация отклонена: {reason}")
         self._secret = result.get("secret")
         self._note_reconnect()
@@ -355,7 +376,9 @@ class HubClient:
                 бы незамеченной и сессия оглохла бы навсегда.
         """
         self.ensure_connected()
-        query = urllib.parse.urlencode({"agent_id": self.agent_id, "secret": self._secret or ""})
+        query = urllib.parse.urlencode(
+            {"agent_id": self.agent_id, "secret": self._secret or ""}
+        )
         result = self._transport.get(f"/api/poll?{query}")
         if not result.get("success", True):
             # любой отказ опроса после удачного подключения означает, что нас
@@ -404,3 +427,27 @@ class HubClient:
             visibility="mod_only",
         )
         return data.get("channels") or []
+
+    def create_channel(self, channel: str, description: str = "") -> dict[str, Any]:
+        """Заводит канал; уже существующий возвращается без изменений.
+
+        Raises:
+            HubRejected: если хаб отклонил имя канала.
+        """
+        return self.event(
+            "thread.channel.create",
+            {"channel": channel, "description": description},
+            visibility="mod_only",
+        )
+
+    def delete_channel(self, channel: str) -> dict[str, Any]:
+        """Удаляет канал вместе с его перепиской.
+
+        Raises:
+            HubRejected: если канала нет или он задан настройками сервера.
+        """
+        return self.event(
+            "thread.channel.delete",
+            {"channel": channel},
+            visibility="mod_only",
+        )

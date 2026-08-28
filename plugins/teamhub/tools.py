@@ -11,7 +11,9 @@ from typing import Any, Final
 DEFAULT_LIMIT: Final[int] = 20
 
 
-def _obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+def _obj(
+    properties: dict[str, Any], required: list[str] | None = None
+) -> dict[str, Any]:
     """Собирает схему объекта для входных параметров инструмента."""
     schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
@@ -27,7 +29,10 @@ def chat_tools(agent_id: str) -> list[dict[str, Any]]:
             "description": f"Отправить сообщение в канал командного хаба от имени «{agent_id}».",
             "inputSchema": _obj(
                 {
-                    "channel": {"type": "string", "description": "Имя канала, например general"},
+                    "channel": {
+                        "type": "string",
+                        "description": "Имя канала, например general",
+                    },
                     "text": {"type": "string", "description": "Текст сообщения"},
                 },
                 ["channel", "text"],
@@ -51,6 +56,37 @@ def chat_tools(agent_id: str) -> list[dict[str, Any]]:
             "name": "hub_list_channels",
             "description": "Список каналов командного хаба.",
             "inputSchema": _obj({}),
+        },
+        {
+            "name": "hub_create_channel",
+            "description": (
+                "Завести новый канал в командном хабе — например, под новый проект. "
+                "Канал переживает перезапуск хаба и виден всей команде."
+            ),
+            "inputSchema": _obj(
+                {
+                    "channel": {
+                        "type": "string",
+                        "description": "Имя: буквы, цифры, дефис или подчёркивание",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Чему канал посвящён",
+                    },
+                },
+                ["channel"],
+            ),
+        },
+        {
+            "name": "hub_delete_channel",
+            "description": (
+                "Удалить канал вместе со всей его перепиской. Действие необратимое. "
+                "Каналы, заданные настройками сервера, удалить нельзя."
+            ),
+            "inputSchema": _obj(
+                {"channel": {"type": "string", "description": "Имя канала"}},
+                ["channel"],
+            ),
         },
         {
             "name": "hub_whoami",
@@ -108,7 +144,10 @@ def wiki_tools() -> list[dict[str, Any]]:
             "inputSchema": _obj(
                 {
                     "page_path": {"type": "string", "description": "Путь страницы"},
-                    "old_text": {"type": "string", "description": "Что заменить, дословно"},
+                    "old_text": {
+                        "type": "string",
+                        "description": "Что заменить, дословно",
+                    },
                     "new_text": {"type": "string", "description": "На что заменить"},
                 },
                 ["page_path", "old_text", "new_text"],
@@ -149,7 +188,10 @@ def wiki_tools() -> list[dict[str, Any]]:
             "inputSchema": _obj(
                 {
                     "page_path": {"type": "string", "description": "Текущий путь"},
-                    "new_path": {"type": "string", "description": "Новый путь-ветка через слэши"},
+                    "new_path": {
+                        "type": "string",
+                        "description": "Новый путь-ветка через слэши",
+                    },
                 },
                 ["page_path", "new_path"],
             ),
@@ -166,8 +208,14 @@ def wiki_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Путь-ветка через слэши, например motion/vae/обучение",
                     },
-                    "text": {"type": "string", "description": "Что дописать, разметкой markdown"},
-                    "title": {"type": "string", "description": "Заголовок, если страницы ещё нет"},
+                    "text": {
+                        "type": "string",
+                        "description": "Что дописать, разметкой markdown",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Заголовок, если страницы ещё нет",
+                    },
                 },
                 ["page_path", "text"],
             ),
@@ -185,8 +233,14 @@ def wiki_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Путь-ветка через слэши, например motion/vae/обучение",
                     },
-                    "content": {"type": "string", "description": "Содержимое в разметке markdown"},
-                    "title": {"type": "string", "description": "Заголовок (по умолчанию — из пути)"},
+                    "content": {
+                        "type": "string",
+                        "description": "Содержимое в разметке markdown",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Заголовок (по умолчанию — из пути)",
+                    },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
