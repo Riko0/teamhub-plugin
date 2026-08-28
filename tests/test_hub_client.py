@@ -11,10 +11,18 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeTransport
-from hub_client import HubClient, HubConfig, HubRejected, build_auth_header, resolve_agent_id
+from hub_client import (
+    HubClient,
+    HubConfig,
+    HubRejected,
+    build_auth_header,
+    resolve_agent_id,
+)
 
 
-def test_регистрация_запоминает_секрет(client: HubClient, transport: FakeTransport) -> None:
+def test_регистрация_запоминает_секрет(
+    client: HubClient, transport: FakeTransport
+) -> None:
     client.connect()
     client.send_message("general", "привет")
     отправка = [c for c in transport.calls if c[1] == "/api/send_event"][0]
@@ -69,11 +77,15 @@ def test_неуспешный_опрос_не_выдаётся_за_пустой
 
 
 def test_опрос_без_поля_успеха_считается_удачным(config: HubConfig) -> None:
-    transport = FakeTransport([{"success": True, "secret": "s"}, {"messages": [{"a": 1}]}])
+    transport = FakeTransport(
+        [{"success": True, "secret": "s"}, {"messages": [{"a": 1}]}]
+    )
     assert HubClient(config, transport).poll_events() == [{"a": 1}]
 
 
-def test_закрытый_клиент_не_переподключается(client: HubClient, transport: FakeTransport) -> None:
+def test_закрытый_клиент_не_переподключается(
+    client: HubClient, transport: FakeTransport
+) -> None:
     client.connect()
     client.close()
     assert transport.closed is True
@@ -81,7 +93,9 @@ def test_закрытый_клиент_не_переподключается(cli
         client.send_message("general", "привет")
 
 
-def test_подключение_происходит_лениво(client: HubClient, transport: FakeTransport) -> None:
+def test_подключение_происходит_лениво(
+    client: HubClient, transport: FakeTransport
+) -> None:
     assert transport.calls == [], "создание клиента не должно ходить в сеть"
     client.list_channels()
     assert transport.calls[0][1] == "/api/register"
@@ -99,13 +113,17 @@ class TestИмяАгента:
     def test_явное_имя_побеждает(self) -> None:
         assert resolve_agent_id({"agent_id": "ivan", "name_prefix": "x"}) == "ivan"
 
-    def test_префикс_склеивается_с_каталогом(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_префикс_склеивается_с_каталогом(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         project = tmp_path / "superres"
         project.mkdir()
         monkeypatch.chdir(project)
         assert resolve_agent_id({"name_prefix": "ivan"}) == "ivan-superres"
 
-    def test_без_настроек_берётся_каталог(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_без_настроек_берётся_каталог(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         project = tmp_path / "motion"
         project.mkdir()
         monkeypatch.chdir(project)
@@ -126,7 +144,10 @@ def test_протухший_секрет_считается_потерей_ре�
     transport = FakeTransport(
         [
             {"success": True, "secret": "старый"},
-            {"success": False, "error_message": "Authentication failed: Invalid or missing secret"},
+            {
+                "success": False,
+                "error_message": "Authentication failed: Invalid or missing secret",
+            },
             {"success": True, "secret": "новый"},
             {"success": True, "data": {}},
         ]
@@ -158,7 +179,12 @@ class TestЗанятоеИмя:
     @staticmethod
     def _занято(config: HubConfig) -> HubClient:
         transport = FakeTransport(
-            [{"success": False, "message": "Agent goalekseenko-motion already registered with network"}]
+            [
+                {
+                    "success": False,
+                    "message": "Agent goalekseenko-motion already registered with network",
+                }
+            ]
         )
         return HubClient(config, transport)
 
@@ -172,7 +198,9 @@ class TestЗанятоеИмя:
     def test_повторных_попыток_не_делает(self, config: HubConfig) -> None:
         from hub_client import HubNameTaken
 
-        transport = FakeTransport([{"success": False, "message": "Agent x already registered with network"}])
+        transport = FakeTransport(
+            [{"success": False, "message": "Agent x already registered with network"}]
+        )
         client = HubClient(config, transport)
         for _ in range(3):
             with pytest.raises(HubNameTaken):
@@ -180,7 +208,9 @@ class TestЗанятоеИмя:
         обращений = [c for c in transport.calls if c[1] == "/api/register"]
         assert len(обращений) == 1, "после отказа не должно быть новых попыток"
 
-    def test_занятое_имя_не_путается_с_потерей_регистрации(self, config: HubConfig) -> None:
+    def test_занятое_имя_не_путается_с_потерей_регистрации(
+        self, config: HubConfig
+    ) -> None:
         """«already registered» содержит слово register — легко перепутать."""
         from hub_client import HubNameTaken
 
@@ -196,7 +226,12 @@ def test_частые_перерегистрации_считаются_драк
     ответы = []
     for _ in range(6):
         ответы.append({"success": True, "secret": "s"})
-        ответы.append({"success": False, "error_message": "Authentication failed: Invalid or missing secret"})
+        ответы.append(
+            {
+                "success": False,
+                "error_message": "Authentication failed: Invalid or missing secret",
+            }
+        )
     client = HubClient(config, FakeTransport(ответы))
     with pytest.raises(HubNameTaken, match="уступаю"):
         for _ in range(6):
@@ -254,15 +289,24 @@ class TestФоновыеЗадачи:
     def test_daemon_run_узнаётся_только_как_подкоманда(self) -> None:
         from hub_client import is_background_instance
 
-        assert is_background_instance(["/home/x/.local/bin/claude daemon run --origin transient"]) is True
+        assert (
+            is_background_instance(
+                ["/home/x/.local/bin/claude daemon run --origin transient"]
+            )
+            is True
+        )
         assert is_background_instance(["/usr/bin/other daemon run"]) is False
 
 
-def test_уступка_имени_не_вечна(config: HubConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_уступка_имени_не_вечна(
+    config: HubConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Соперник мог закрыться — через время стоит попробовать снова."""
     import hub_client
 
-    transport = FakeTransport([{"success": False, "message": "Agent x already registered"}])
+    transport = FakeTransport(
+        [{"success": False, "message": "Agent x already registered"}]
+    )
     client = HubClient(config, transport)
     from hub_client import HubNameTaken
 
@@ -273,6 +317,63 @@ def test_уступка_имени_не_вечна(config: HubConfig, monkeypatc
 
     время = [hub_client.time.monotonic() + hub_client.RECONNECT_WINDOW_S + 1]
     monkeypatch.setattr(hub_client.time, "monotonic", lambda: время[0])
-    transport.responses = [{"success": True, "secret": "s"}, {"success": True, "data": {}}]
+    transport.responses = [
+        {"success": True, "secret": "s"},
+        {"success": True, "data": {}},
+    ]
     client.list_channels()  # выждали — пробуем снова
     assert len([c for c in transport.calls if c[1] == "/api/register"]) == 2
+
+
+class ПадающийНаОтключении(FakeTransport):
+    """Заглушка, у которой снятие регистрации срывается."""
+
+    def post(self, path: str, body: dict) -> dict:
+        if path == "/api/unregister":
+            raise RuntimeError("связи нет")
+        return super().post(path, body)
+
+
+def test_закрытие_снимает_регистрацию(
+    client: HubClient, transport: FakeTransport
+) -> None:
+    """Хаб держит регистрацию вечно, поэтому уходя за собой нужно убрать.
+
+    Иначе имя остаётся в списке участников навсегда — так после каждой
+    проверки связи при настройке на хабе оседал лишний агент.
+    """
+    client.connect()
+    client.close()
+    снятие = [c for c in transport.calls if c[1] == "/api/unregister"]
+    assert len(снятие) == 1
+    assert снятие[0][2] == {"agent_id": "tester", "secret": "s3cret"}
+
+
+def test_закрытие_без_подключения_не_ходит_на_хаб(config: HubConfig) -> None:
+    """Если подключения не было, снимать нечего — лишний запрос ни к чему."""
+    transport = FakeTransport()
+    HubClient(config, transport).close()
+    assert not [c for c in transport.calls if c[1] == "/api/unregister"]
+
+
+def test_повторное_закрытие_не_снимает_дважды(
+    client: HubClient, transport: FakeTransport
+) -> None:
+    """Второй close не должен слать ещё один запрос."""
+    client.connect()
+    client.close()
+    client.close()
+    assert len([c for c in transport.calls if c[1] == "/api/unregister"]) == 1
+
+
+def test_сорвавшееся_снятие_не_мешает_закрыться(config: HubConfig) -> None:
+    """На выходе важнее закрыть транспорт, чем доложить об ошибке.
+
+    Сессия завершается, жаловаться уже некому, а незакрытый SSH-туннель
+    остался бы висеть процессом.
+    """
+    transport = ПадающийНаОтключении([{"success": True, "secret": "s"}])
+    клиент = HubClient(config, transport)
+    клиент.connect()
+    клиент.close()
+    assert transport.closed

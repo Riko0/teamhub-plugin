@@ -273,10 +273,31 @@ class HubClient:
                 self.connect()
 
     def close(self) -> None:
-        """Закрывает клиента навсегда: переподключений больше не будет."""
+        """Закрывает клиента навсегда: переподключений больше не будет.
+
+        Заодно снимает регистрацию с хаба. Хаб держит её вечно и сам не
+        убирает, поэтому без этого каждая проверка связи при настройке
+        оставляла бы в списке участников имя, которого уже нет.
+        """
+        self._unregister()
         self._closed = True
         self._connected = False
         self._transport.close()
+
+    def _unregister(self) -> None:
+        """Снимает регистрацию, не мешая закрытию, если это не удалось.
+
+        Вызывается на завершении, когда сообщать об ошибке уже некому и
+        помешать закрытию она не должна.
+        """
+        if not self._connected or not self._secret:
+            return
+        try:
+            self._transport.post(
+                "/api/unregister", {"agent_id": self.agent_id, "secret": self._secret}
+            )
+        except Exception as exc:  # noqa: BLE001 — на выходе важнее закрыться, чем упасть
+            _log(f"не удалось сняться с регистрации: {type(exc).__name__}")
 
     def _note_reconnect(self) -> None:
         """Считает частые перерегистрации — признак драки за имя.
